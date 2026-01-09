@@ -64,11 +64,15 @@ fn verify_storage_proof(storage_root: &B256, slot: U256, proof: &[Vec<u8>]) -> U
     let trie = EthTrie::new(Arc::new(MemoryDB::new(true)));
     let value = trie
         .verify_proof(root, &key, proof.to_vec())
-        .expect("Invalid storage root or proof")
-        .expect("Slot not found");
-    
-    let mut slice = value.as_slice();
-    U256::decode(&mut slice).unwrap()
+        .expect("Invalid storage root or proof");
+
+    match value {
+        Some(value) => {
+            let mut slice = value.as_slice();
+            U256::decode(&mut slice).unwrap()
+        }
+        None => U256::ZERO,
+    }
 }
 
 

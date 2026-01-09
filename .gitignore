@@ -1,3 +1,4 @@
 /target/
 /program/elf/
 .DS_Store
+.env
