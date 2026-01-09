@@ -1,0 +1,16 @@
+[package]
+name = "program"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sp1-zkvm = "3.0.0"
+alloy-primitives = { version = "0.8.14", default-features = false }
+alloy-rlp = { version = "0.3.9", features = ["derive"] }
+alloy-trie = "0.7.0"
+sha3 = "0.10"
+serde = { version = "1.0", features = ["derive"] }
+shared = { path = "../shared" }
+thiserror = "1.0"
+eth_trie = "0.4"
+ethereum-types = "0.14"
