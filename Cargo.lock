@@ -4620,6 +4620,7 @@ dependencies = [
  "alloy-primitives 0.8.26",
  "dotenvy",
  "reqwest 0.12.28",
+ "rlp",
  "serde",
  "serde_json",
  "sha3",

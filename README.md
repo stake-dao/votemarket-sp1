@@ -97,6 +97,160 @@ cd script
 RUST_LOG=info cargo run --release
 ```
 
+### 3. Run the Host (Proof Mode)
+
+Set `RUN_MODE=prove` to generate a real proof. You can choose the proof format and optionally verify the proof locally.
+
+```bash
+cd script
+RUN_MODE=prove PROOF_KIND=plonk VERIFY_PROOF=true RUST_LOG=info cargo run --release
+```
+
+Proof artifacts are saved under `script/output/` by default:
+
+- `proof.bin` (bincode-serialized SP1 proof bundle)
+- `proof.json` (proof bytes, public values, and decoded outputs)
+
+You can override the file names with `PROOF_OUTPUT` and `PROOF_JSON`.
+
+#### Output (`proof.json`)
+
+```json
+{
+  "proof_kind": "plonk|groth16|compressed|core",
+  "proof_bytes": "0x... (plonk/groth16 only)",
+  "public_values_raw": "0x...",
+  "public_values_hash": "0x...",
+  "public_values_hash_bn254": "0x...",
+  "output": {
+    "state_root": "0x...",
+    "results": [
+      {
+        "account": "0x...",
+        "slot": "0x...",
+        "value": "0x..."
+      }
+    ]
+  }
+}
+```
+
+- `proof_kind`: proof format (`core`, `compressed`, `plonk`, `groth16`).
+- `proof_bytes`: hex-encoded proof bytes for on-chain verifiers (only present for `plonk`/`groth16`).
+- `public_values_raw`: hex-encoded bytes committed by the guest (`Output` serialized via `sp1_zkvm::io::commit`).
+- `public_values_hash`: SHA-256 hash of `public_values_raw` (hex).
+- `public_values_hash_bn254`: BN254 field element encoding of the same digest (hex) used by the Solidity verifiers.
+- `output`: decoded public values for convenience.
+- `output.state_root`: state root the guest validated against.
+- `output.results[]`: list of `(account, slot, value)` storage values proven under that state root.
+
+`proof_bytes` and `public_values_raw` are the values broadcasted on-chain.
+
+### 4. Inputs (Env or JSON)
+
+You can pass inputs via env vars or a JSON file:
+
+```bash
+ETHEREUM_MAINNET_RPC_URL=... \
+CHAIN_ID=1 \
+BLOCK_NUMBER=23438749 \
+PROTOCOL=curve \
+GAUGE_CONTROLLER=0x... \
+GAUGE=0x... \
+ACCOUNT=0x... \
+WEIGHT_MAPPING_SLOT=0x... \
+LAST_VOTE_MAPPING_SLOT=0x... \
+USER_SLOPE_MAPPING_SLOT=0x... \
+RUST_LOG=info cargo run --release
+```
+
+Note: for other chains, set the toolkit-style RPC env var (`ARBITRUM_MAINNET_RPC_URL`, `OPTIMISM_MAINNET_RPC_URL`,
+`BASE_MAINNET_RPC_URL`, `POLYGON_MAINNET_RPC_URL`, `BSC_MAINNET_RPC_URL`) and update `CHAIN_ID` accordingly.
+
+Or provide a JSON file that follows the canonical host schema:
+
+```json
+{
+  "chain_id": 1,
+  "block_number": 23438749,
+  "epoch": 1758758400,
+  "protocol": "curve",
+  "gauge_controller": "0x0000000000000000000000000000000000000000",
+  "slots": {
+    "weight_mapping_slot": "0x00",
+    "last_vote_mapping_slot": "0x00",
+    "user_slope_mapping_slot": "0x00"
+  },
+  "requests": [
+    {
+      "type": "account_data",
+      "account": "0x0000000000000000000000000000000000000000",
+      "gauge": "0x0000000000000000000000000000000000000000"
+    },
+    {
+      "type": "point_data",
+      "gauge": "0x0000000000000000000000000000000000000000"
+    }
+  ]
+}
+```
+
+Save it and pass `INPUT_JSON=/path/to/host_input.json`.
+
+### 5. Toolkit Proof Source
+
+To reuse the VoteMarket proof toolkit as the proof input generator, set `PROOF_SOURCE=toolkit`.
+The host will generate (or reuse) the host JSON and call `script/toolkit_adapter.py`.
+It also forwards the chain-specific RPC env var to the toolkit, so you only set it once in this repo.
+
+Quickstart (after installing the toolkit and setting `ETHEREUM_MAINNET_RPC_URL`):
+
+Install the toolkit into a local Python environment in this repo:
+
+```bash
+cd /path/to/votemarket-sp1
+python -m venv .venv
+source .venv/bin/activate
+pip install votemarket-toolkit
+```
+
+Or, with `uv`:
+
+```bash
+cd /path/to/votemarket-sp1
+uv venv .venv
+uv pip install votemarket-toolkit
+```
+
+Then run from the `votemarket-sp1/script` directory:
+
+```bash
+cd /path/to/votemarket-sp1/script
+PROOF_SOURCE=toolkit RUN_MODE=prove PROOF_KIND=plonk VERIFY_PROOF=true RUST_LOG=info cargo run --release
+```
+
+If the host cannot locate your Python interpreter, set it explicitly:
+
+```bash
+export PYTHON_BIN="$(which python)"
+```
+
+If you want to use a local checkout of the toolkit instead of the PyPI package:
+
+```bash
+export TOOLKIT_ROOT=/path/to/votemarket-proof-toolkit
+```
+
+Then rerun the command:
+
+```bash
+PROOF_SOURCE=toolkit RUN_MODE=prove PROOF_KIND=plonk VERIFY_PROOF=true RUST_LOG=info cargo run --release
+```
+
+Refer to the [VoteMarket Proof Toolkit README](https://github.com/stake-dao/votemarket-proof-toolkit) for further examples and advanced configuration.
+
+Ensure the toolkit RPC env vars are configured (see its README).
+
 ### How the two apps relate (end-to-end flow)
 
 1. **Host (`script/`) collects inputs**: state root + MPT proofs (real RPC or mock).
