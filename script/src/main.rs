@@ -2,9 +2,9 @@ use alloy_primitives::{hex, Address, B256, U256};
 use rlp::Rlp;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use shared::{Input, Output, StorageProofRequest};
 use sha3::{Digest, Keccak256};
-use sp1_sdk::{ProverClient, SP1Stdin};
+use shared::{AccountRequest, AccountResult, Input, Output, PointRequest, PointResult};
+use sp1_sdk::{HashableKey, ProverClient, SP1Stdin};
 use std::{
     collections::HashMap,
     env,
@@ -38,10 +38,7 @@ fn load_elf() -> Vec<u8> {
         }
     }
 
-    panic!(
-        "Failed to read SP1 ELF. Tried:\n{}",
-        errors.join("\n")
-    );
+    panic!("Failed to read SP1 ELF. Tried:\n{}", errors.join("\n"));
 }
 
 fn resolve_elf_path(path: &str) -> PathBuf {
@@ -306,12 +303,14 @@ impl HostInput {
     }
 }
 
+/// Expanded slot information for a single request
 #[derive(Debug, Clone)]
 struct SlotRequest {
     label: String,
     slot: U256,
 }
 
+/// Expanded request with computed slot positions
 #[derive(Debug)]
 struct RequestSlots {
     kind: RequestKind,
@@ -322,6 +321,7 @@ struct RequestSlots {
 
 #[derive(Serialize)]
 struct ProofArtifact {
+    program_vkey: String,
     proof_kind: String,
     proof_bytes: Option<String>,
     public_values_raw: String,
@@ -408,6 +408,10 @@ struct ProofResponse {
     storage_proof: Vec<StorageProof>,
 }
 
+// =============================================================================
+// RPC FUNCTIONS
+// =============================================================================
+
 async fn rpc_call<T: for<'de> Deserialize<'de>>(
     client: &reqwest::Client,
     url: &str,
@@ -474,10 +478,10 @@ async fn fetch_proofs(
     rpc_url: &str,
     gauge_controller: Address,
     block_number: u64,
-    slots: &[SlotRequest],
+    slots: &[U256],
 ) -> Result<ProofResponse, String> {
     let block_number_hex = format!("0x{:x}", block_number);
-    let slot_hexes: Vec<String> = slots.iter().map(|slot| u256_to_hex_32(slot.slot)).collect();
+    let slot_hexes: Vec<String> = slots.iter().map(|slot| u256_to_hex_32(*slot)).collect();
 
     rpc_call(
         client,
@@ -487,6 +491,10 @@ async fn fetch_proofs(
     )
     .await
 }
+
+// =============================================================================
+// REQUEST EXPANSION (Compute storage slots)
+// =============================================================================
 
 fn expand_requests(input: &HostInput, epoch: u64) -> Result<Vec<RequestSlots>, String> {
     let mut expanded = Vec::new();
@@ -522,7 +530,7 @@ fn expand_requests(input: &HostInput, epoch: u64) -> Result<Vec<RequestSlots>, S
         }
 
         expanded.push(RequestSlots {
-            kind: request.kind.clone(),
+            kind: request.kind,
             account,
             gauge,
             slots,
@@ -531,6 +539,10 @@ fn expand_requests(input: &HostInput, epoch: u64) -> Result<Vec<RequestSlots>, S
 
     Ok(expanded)
 }
+
+// =============================================================================
+// SLOT CALCULATION FUNCTIONS (Protocol-specific)
+// =============================================================================
 
 fn gauge_time_slot(protocol: Protocol, gauge: Address, epoch: u64, base_slot: U256) -> U256 {
     match protocol {
@@ -550,6 +562,7 @@ fn user_vote_slots(
 ) -> Vec<SlotRequest> {
     let mut slots = Vec::new();
 
+    // last_vote slot (not present for Pendle)
     if protocol != Protocol::Pendle {
         let last_vote_slot = match protocol {
             Protocol::Curve => user_gauge_slot_pre_vyper03(account, gauge, last_vote_base_slot),
@@ -563,6 +576,7 @@ fn user_vote_slots(
         });
     }
 
+    // user_slope slot
     let vote_user_slope_slot = match protocol {
         Protocol::Curve => user_gauge_slot_pre_vyper03(account, gauge, user_slope_base_slot),
         Protocol::Yb => user_gauge_slot_default(account, gauge, user_slope_base_slot),
@@ -575,6 +589,7 @@ fn user_vote_slots(
         slot: vote_user_slope_slot,
     });
 
+    // Additional slots (end, bias) with offsets from slope slot
     let additional_offsets: Vec<(u64, &str)> = match protocol {
         Protocol::Yb => vec![(1, "user_bias"), (3, "user_end")],
         Protocol::Pendle => vec![(1, "user_bias")],
@@ -610,10 +625,7 @@ fn gauge_time_slot_yb(gauge: Address, base_slot: U256) -> U256 {
 }
 
 fn gauge_time_slot_pendle(gauge: Address, epoch: u64, base_slot: U256) -> U256 {
-    let encoded_1 = keccak_abi_encode(&[
-        encode_uint128(epoch as u128),
-        encode_u256(base_slot),
-    ]);
+    let encoded_1 = keccak_abi_encode(&[encode_uint128(epoch as u128), encode_u256(base_slot)]);
     let struct_slot = U256::from_be_bytes(encoded_1) + U256::from(1u64);
     let encoded_2 = keccak_abi_encode(&[encode_address(gauge), encode_u256(struct_slot)]);
     U256::from_be_bytes(encoded_2)
@@ -638,6 +650,10 @@ fn user_gauge_slot_pendle(account: Address, gauge: Address, base_slot: U256) -> 
     let encoded_2 = keccak_abi_encode(&[encode_address(gauge), encode_u256(struct_slot)]);
     U256::from_be_bytes(encoded_2)
 }
+
+// =============================================================================
+// ENCODING HELPERS
+// =============================================================================
 
 fn keccak_abi_encode(words: &[[u8; 32]]) -> [u8; 32] {
     let mut buf = Vec::with_capacity(words.len() * 32);
@@ -670,6 +686,10 @@ fn u256_to_hex_32(value: U256) -> String {
 fn u256_to_hex(value: U256) -> String {
     format!("0x{:x}", value)
 }
+
+// =============================================================================
+// PARSING HELPERS
+// =============================================================================
 
 fn parse_u64(value: &str) -> Result<u64, String> {
     let trimmed = value.strip_prefix("0x").unwrap_or(value);
@@ -719,9 +739,9 @@ fn parse_u256(value: &str) -> Result<U256, String> {
 }
 
 fn parse_optional_bool_env(name: &str) -> Option<bool> {
-    env::var(name).ok().map(|value| {
-        matches!(value.to_lowercase().as_str(), "1" | "true" | "yes")
-    })
+    env::var(name)
+        .ok()
+        .map(|value| matches!(value.to_lowercase().as_str(), "1" | "true" | "yes"))
 }
 
 fn toolkit_rpc_env_name(chain_id: u64) -> Result<&'static str, String> {
@@ -751,7 +771,9 @@ fn resolve_python_bin() -> String {
         return python;
     }
 
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().map(PathBuf::from);
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(PathBuf::from);
     let root = root.unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf());
     let candidates = [
         root.join(".venv/bin/python"),
@@ -767,6 +789,10 @@ fn resolve_python_bin() -> String {
 
     "python3".to_string()
 }
+
+// =============================================================================
+// PROOF DECODING HELPERS
+// =============================================================================
 
 fn decode_proof_nodes(nodes: &[String]) -> Result<Vec<Vec<u8>>, String> {
     nodes
@@ -785,10 +811,14 @@ fn decode_rlp_node_list(value: &str) -> Result<Vec<Vec<u8>>, String> {
     if !rlp.is_list() {
         return Err("expected RLP list for node list".to_string());
     }
-    let count = rlp.item_count().map_err(|err| format!("rlp count failed: {err}"))?;
+    let count = rlp
+        .item_count()
+        .map_err(|err| format!("rlp count failed: {err}"))?;
     let mut nodes = Vec::with_capacity(count);
     for idx in 0..count {
-        let item = rlp.at(idx).map_err(|err| format!("rlp node failed: {err}"))?;
+        let item = rlp
+            .at(idx)
+            .map_err(|err| format!("rlp node failed: {err}"))?;
         nodes.push(item.as_raw().to_vec());
     }
     Ok(nodes)
@@ -800,10 +830,14 @@ fn decode_rlp_proof_list(value: &str) -> Result<Vec<Vec<Vec<u8>>>, String> {
     if !rlp.is_list() {
         return Err("expected RLP list for proof list".to_string());
     }
-    let count = rlp.item_count().map_err(|err| format!("rlp count failed: {err}"))?;
+    let count = rlp
+        .item_count()
+        .map_err(|err| format!("rlp count failed: {err}"))?;
     let mut proofs = Vec::with_capacity(count);
     for idx in 0..count {
-        let proof_item = rlp.at(idx).map_err(|err| format!("rlp proof failed: {err}"))?;
+        let proof_item = rlp
+            .at(idx)
+            .map_err(|err| format!("rlp proof failed: {err}"))?;
         if !proof_item.is_list() {
             return Err("expected proof item list".to_string());
         }
@@ -822,44 +856,127 @@ fn decode_rlp_proof_list(value: &str) -> Result<Vec<Vec<Vec<u8>>>, String> {
     Ok(proofs)
 }
 
+// =============================================================================
+// INPUT BUILDING (NEW SEMANTIC STRUCTURE)
+// =============================================================================
+
+/// Build the new Input structure from RPC proofs
 fn build_input_from_rpc(
     state_root: B256,
+    epoch: u64,
     gauge_controller: Address,
-    slots: &[SlotRequest],
+    requests: &[RequestSlots],
     proof: ProofResponse,
 ) -> Result<Input, String> {
-    if proof.storage_proof.len() != slots.len() {
-        return Err(format!(
-            "storage proof length mismatch: expected {}, got {}",
-            slots.len(),
-            proof.storage_proof.len()
-        ));
-    }
-
     let account_proof = decode_proof_nodes(&proof.account_proof)?;
 
-    let proofs = slots
-        .iter()
-        .zip(proof.storage_proof.iter())
-        .map(|(slot, storage)| {
-            let storage_proof = decode_proof_nodes(&storage.proof)?;
-            Ok(StorageProofRequest {
-                account: gauge_controller,
-                slot: slot.slot,
-                account_proof: account_proof.clone(),
-                storage_proof,
-            })
-        })
-        .collect::<Result<Vec<_>, String>>()?;
+    // Map slot hex to storage proof
+    let mut slot_to_proof: HashMap<U256, Vec<Vec<u8>>> = HashMap::new();
+    let mut slot_index = 0;
+    for request in requests {
+        for slot in &request.slots {
+            if slot_index >= proof.storage_proof.len() {
+                return Err("not enough storage proofs".to_string());
+            }
+            let storage_proof = decode_proof_nodes(&proof.storage_proof[slot_index].proof)?;
+            slot_to_proof.insert(slot.slot, storage_proof);
+            slot_index += 1;
+        }
+    }
+
+    let mut point_requests = Vec::new();
+    let mut account_requests = Vec::new();
+
+    for request in requests {
+        match request.kind {
+            RequestKind::PointData => {
+                // Point data has a single slot (bias)
+                let bias_slot = request
+                    .slots
+                    .iter()
+                    .find(|s| s.label == "weight_bias")
+                    .ok_or("missing weight_bias slot")?;
+
+                let bias_proof = slot_to_proof
+                    .get(&bias_slot.slot)
+                    .ok_or("missing bias proof")?
+                    .clone();
+
+                point_requests.push(PointRequest {
+                    gauge: request.gauge,
+                    gauge_controller,
+                    account_proof: account_proof.clone(),
+                    bias_proof,
+                    bias_slot: bias_slot.slot,
+                });
+            }
+            RequestKind::AccountData => {
+                let account = request.account.ok_or("missing account for account_data")?;
+
+                // Find required slots
+                let slope_slot = request
+                    .slots
+                    .iter()
+                    .find(|s| s.label == "user_slope")
+                    .ok_or("missing user_slope slot")?;
+
+                let end_slot = request
+                    .slots
+                    .iter()
+                    .find(|s| s.label == "user_end" || s.label == "user_bias")
+                    .ok_or("missing user_end/user_bias slot")?;
+
+                let last_vote_slot = request.slots.iter().find(|s| s.label == "last_vote");
+
+                let slope_proof = slot_to_proof
+                    .get(&slope_slot.slot)
+                    .ok_or("missing slope proof")?
+                    .clone();
+
+                let end_proof = slot_to_proof
+                    .get(&end_slot.slot)
+                    .ok_or("missing end proof")?
+                    .clone();
+
+                let (last_vote_proof, last_vote_slot_val) = match last_vote_slot {
+                    Some(slot) => {
+                        let proof = slot_to_proof
+                            .get(&slot.slot)
+                            .ok_or("missing last_vote proof")?
+                            .clone();
+                        (Some(proof), Some(slot.slot))
+                    }
+                    None => (None, None),
+                };
+
+                account_requests.push(AccountRequest {
+                    account,
+                    gauge: request.gauge,
+                    gauge_controller,
+                    account_proof: account_proof.clone(),
+                    slope_proof,
+                    end_proof,
+                    last_vote_proof,
+                    slope_slot: slope_slot.slot,
+                    end_slot: end_slot.slot,
+                    last_vote_slot: last_vote_slot_val,
+                });
+            }
+        }
+    }
 
     Ok(Input {
         state_root,
-        proofs,
+        epoch,
+        point_requests,
+        account_requests,
     })
 }
 
+/// Build the new Input structure from toolkit proofs
 fn build_input_from_toolkit(
     state_root: B256,
+    epoch: u64,
     gauge_controller: Address,
     requests: &[RequestSlots],
     bundle: ToolkitProofBundle,
@@ -874,70 +991,113 @@ fn build_input_from_toolkit(
         user_proofs.insert((proof.account, proof.gauge), proof);
     }
 
+    // Get account proof from first available proof
     let mut account_proof_nodes: Option<Vec<Vec<u8>>> = None;
     if let Some(proof) = gauge_proofs.values().next() {
         account_proof_nodes = Some(decode_rlp_node_list(&proof.gauge_controller_proof)?);
     } else if let Some(proof) = user_proofs.values().next() {
         account_proof_nodes = Some(decode_rlp_node_list(&proof.account_proof)?);
     }
+    let account_proof_nodes =
+        account_proof_nodes.ok_or_else(|| "missing account proof".to_string())?;
 
-    let account_proof_nodes = account_proof_nodes.ok_or_else(|| "missing account proof".to_string())?;
-
-    let mut storage_requests = Vec::new();
+    let mut point_requests = Vec::new();
+    let mut account_requests = Vec::new();
 
     for request in requests {
         match request.kind {
             RequestKind::PointData => {
-                let proof = gauge_proofs
+                let toolkit_proof = gauge_proofs
                     .get(&request.gauge)
-                    .ok_or_else(|| "missing gauge proof".to_string())?;
-                let proofs = decode_rlp_proof_list(&proof.point_data_proof)?;
-                if proofs.len() != request.slots.len() {
-                    return Err(format!(
-                        "gauge proof length mismatch: expected {}, got {}",
-                        request.slots.len(),
-                        proofs.len()
-                    ));
+                    .ok_or_else(|| format!("missing gauge proof for {}", request.gauge))?;
+
+                let proofs = decode_rlp_proof_list(&toolkit_proof.point_data_proof)?;
+                if proofs.is_empty() {
+                    return Err("empty point_data_proof".to_string());
                 }
-                for (slot, storage_proof) in request.slots.iter().zip(proofs.into_iter()) {
-                    storage_requests.push(StorageProofRequest {
-                        account: gauge_controller,
-                        slot: slot.slot,
-                        account_proof: account_proof_nodes.clone(),
-                        storage_proof,
-                    });
-                }
+
+                let bias_slot = request
+                    .slots
+                    .iter()
+                    .find(|s| s.label == "weight_bias")
+                    .ok_or("missing weight_bias slot")?;
+
+                point_requests.push(PointRequest {
+                    gauge: request.gauge,
+                    gauge_controller,
+                    account_proof: account_proof_nodes.clone(),
+                    bias_proof: proofs[0].clone(),
+                    bias_slot: bias_slot.slot,
+                });
             }
             RequestKind::AccountData => {
-                let key = (request.account.ok_or_else(|| "missing account".to_string())?, request.gauge);
-                let proof = user_proofs
+                let account = request.account.ok_or("missing account for account_data")?;
+                let key = (account, request.gauge);
+
+                let toolkit_proof = user_proofs
                     .get(&key)
-                    .ok_or_else(|| "missing user proof".to_string())?;
-                let proofs = decode_rlp_proof_list(&proof.storage_proof)?;
-                if proofs.len() != request.slots.len() {
+                    .ok_or_else(|| format!("missing user proof for {:?}", key))?;
+
+                let proofs = decode_rlp_proof_list(&toolkit_proof.storage_proof)?;
+
+                // Find slot indices by label
+                let slope_idx = request
+                    .slots
+                    .iter()
+                    .position(|s| s.label == "user_slope")
+                    .ok_or("missing user_slope slot")?;
+
+                let end_idx = request
+                    .slots
+                    .iter()
+                    .position(|s| s.label == "user_end" || s.label == "user_bias")
+                    .ok_or("missing user_end/user_bias slot")?;
+
+                let last_vote_idx = request.slots.iter().position(|s| s.label == "last_vote");
+
+                if proofs.len() < request.slots.len() {
                     return Err(format!(
-                        "user proof length mismatch: expected {}, got {}",
+                        "not enough proofs: expected {}, got {}",
                         request.slots.len(),
                         proofs.len()
                     ));
                 }
-                for (slot, storage_proof) in request.slots.iter().zip(proofs.into_iter()) {
-                    storage_requests.push(StorageProofRequest {
-                        account: gauge_controller,
-                        slot: slot.slot,
-                        account_proof: account_proof_nodes.clone(),
-                        storage_proof,
-                    });
-                }
+
+                let slope_slot = &request.slots[slope_idx];
+                let end_slot = &request.slots[end_idx];
+
+                let (last_vote_proof, last_vote_slot_val) = match last_vote_idx {
+                    Some(idx) => (Some(proofs[idx].clone()), Some(request.slots[idx].slot)),
+                    None => (None, None),
+                };
+
+                account_requests.push(AccountRequest {
+                    account,
+                    gauge: request.gauge,
+                    gauge_controller,
+                    account_proof: account_proof_nodes.clone(),
+                    slope_proof: proofs[slope_idx].clone(),
+                    end_proof: proofs[end_idx].clone(),
+                    last_vote_proof,
+                    slope_slot: slope_slot.slot,
+                    end_slot: end_slot.slot,
+                    last_vote_slot: last_vote_slot_val,
+                });
             }
         }
     }
 
     Ok(Input {
         state_root,
-        proofs: storage_requests,
+        epoch,
+        point_requests,
+        account_requests,
     })
 }
+
+// =============================================================================
+// TOOLKIT INTEGRATION
+// =============================================================================
 
 fn ensure_input_json(input: &HostInput, epoch: u64) -> Result<PathBuf, String> {
     if let Ok(path) = env::var("INPUT_JSON") {
@@ -945,8 +1105,7 @@ fn ensure_input_json(input: &HostInput, epoch: u64) -> Result<PathBuf, String> {
     }
 
     let output_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("output");
-    fs::create_dir_all(&output_dir)
-        .map_err(|err| format!("failed to create output dir: {err}"))?;
+    fs::create_dir_all(&output_dir).map_err(|err| format!("failed to create output dir: {err}"))?;
     let path = output_dir.join("host_input.json");
     let payload = serde_json::to_string_pretty(&input.to_json_value(epoch))
         .map_err(|err| format!("failed to serialize host input: {err}"))?;
@@ -985,14 +1144,18 @@ fn run_toolkit(
         .map_err(|err| format!("failed to parse toolkit output: {err}"))
 }
 
+// =============================================================================
+// PROOF PERSISTENCE
+// =============================================================================
+
 fn persist_proof(
+    program_vkey: String,
     proof_kind: ProofKind,
     proof: &sp1_sdk::SP1ProofWithPublicValues,
     output: Output,
 ) -> Result<(), String> {
     let output_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("output");
-    fs::create_dir_all(&output_dir)
-        .map_err(|err| format!("failed to create output dir: {err}"))?;
+    fs::create_dir_all(&output_dir).map_err(|err| format!("failed to create output dir: {err}"))?;
 
     let proof_path = env::var("PROOF_OUTPUT").unwrap_or_else(|_| "proof.bin".to_string());
     let proof_path = PathBuf::from(proof_path);
@@ -1027,6 +1190,7 @@ fn persist_proof(
     );
 
     let artifact = ProofArtifact {
+        program_vkey,
         proof_kind: proof_kind.as_str().to_string(),
         proof_bytes,
         public_values_raw,
@@ -1045,10 +1209,23 @@ fn persist_proof(
     Ok(())
 }
 
+// =============================================================================
+// MAIN
+// =============================================================================
+
 #[tokio::main]
 async fn main() {
     sp1_sdk::utils::setup_logger();
     dotenvy::dotenv().ok();
+
+    // Quick mode: just print the VKEY and exit (no proof generation needed)
+    if parse_optional_bool_env("VKEY_ONLY").unwrap_or(false) {
+        let client = ProverClient::new();
+        let elf = load_elf();
+        let (_, vk) = client.setup(elf.as_slice());
+        println!("Program VKEY: {}", vk.bytes32());
+        return;
+    }
 
     let run_mode = RunMode::from_env();
     let proof_kind = ProofKind::from_env();
@@ -1075,10 +1252,12 @@ async fn main() {
         .unwrap_or_else(|| (timestamp / ONE_WEEK_SECONDS) * ONE_WEEK_SECONDS);
 
     let requests = expand_requests(&host_input, epoch).expect("Failed to expand requests");
-    let mut flat_slots = Vec::new();
+
+    // Collect all slots for RPC fetch
+    let mut all_slots: Vec<U256> = Vec::new();
     for request in &requests {
         for slot in &request.slots {
-            flat_slots.push(slot.clone());
+            all_slots.push(slot.slot);
         }
     }
 
@@ -1089,36 +1268,49 @@ async fn main() {
                 &rpc_url,
                 host_input.gauge_controller,
                 host_input.block_number,
-                &flat_slots,
+                &all_slots,
             )
             .await
             .expect("Failed to fetch proofs");
-            build_input_from_rpc(state_root, host_input.gauge_controller, &flat_slots, proof)
-                .expect("Failed to build input")
+
+            build_input_from_rpc(
+                state_root,
+                epoch,
+                host_input.gauge_controller,
+                &requests,
+                proof,
+            )
+            .expect("Failed to build input")
         }
         ProofSource::Toolkit => {
-            let input_path = ensure_input_json(&host_input, epoch).expect("Failed to create input JSON");
-            let bundle = run_toolkit(&input_path, rpc_env_name, &rpc_url).expect("Failed to run toolkit");
-            build_input_from_toolkit(state_root, host_input.gauge_controller, &requests, bundle)
-                .expect("Failed to build toolkit input")
+            let input_path =
+                ensure_input_json(&host_input, epoch).expect("Failed to create input JSON");
+            let bundle =
+                run_toolkit(&input_path, rpc_env_name, &rpc_url).expect("Failed to run toolkit");
+            build_input_from_toolkit(
+                state_root,
+                epoch,
+                host_input.gauge_controller,
+                &requests,
+                bundle,
+            )
+            .expect("Failed to build toolkit input")
         }
     };
 
     stdin.write(&input);
 
     println!("Input prepared:");
-    println!("Block: {}", host_input.block_number);
-    println!("Epoch: {}", epoch);
-    println!("State root: {:?}", input.state_root);
-    for request in &requests {
-        let label = match request.kind {
-            RequestKind::AccountData => "account_data",
-            RequestKind::PointData => "point_data",
-        };
-        println!("Request {} gauge={} account={:?}", label, request.gauge, request.account);
-        for slot in &request.slots {
-            println!("  Slot {}: 0x{}", slot.label, hex::encode(slot.slot.to_be_bytes::<32>()));
-        }
+    println!("  Block: {}", host_input.block_number);
+    println!("  Epoch: {}", epoch);
+    println!("  State root: {:?}", input.state_root);
+    println!("  Point requests: {}", input.point_requests.len());
+    for (i, req) in input.point_requests.iter().enumerate() {
+        println!("    [{}] gauge={}", i, req.gauge);
+    }
+    println!("  Account requests: {}", input.account_requests.len());
+    for (i, req) in input.account_requests.iter().enumerate() {
+        println!("    [{}] account={} gauge={}", i, req.account, req.gauge);
     }
 
     match run_mode {
@@ -1134,12 +1326,27 @@ async fn main() {
             let output = public_values_clone.read::<Output>();
 
             println!("Cycles: {}", report.total_instruction_count());
-            println!("Output State Root: {:?}", output.state_root);
-            println!("Verified {} slots", output.results.len());
+            println!("Output:");
+            println!("  State root: {:?}", output.state_root);
+            println!("  Epoch: {}", output.epoch);
+            println!("  Point results: {}", output.point_results.len());
+            for (i, res) in output.point_results.iter().enumerate() {
+                println!("    [{}] gauge={} bias={}", i, res.gauge, res.bias);
+            }
+            println!("  Account results: {}", output.account_results.len());
+            for (i, res) in output.account_results.iter().enumerate() {
+                println!(
+                    "    [{}] account={} gauge={} slope={} end={} last_vote={}",
+                    i, res.account, res.gauge, res.slope, res.end, res.last_vote
+                );
+            }
         }
         RunMode::Prove => {
             println!("Generating proof (mode: {})...", proof_kind.as_str());
             let (pk, vk) = client.setup(elf.as_slice());
+
+            // Print the verification key (PROGRAM_VKEY for Solidity contract)
+            println!("Program VKEY: {}", vk.bytes32());
 
             let proof = match proof_kind {
                 ProofKind::Core => client.prove(&pk, stdin).run(),
@@ -1150,7 +1357,9 @@ async fn main() {
             .expect("Proof generation failed");
 
             if verify_proof {
-                client.verify(&proof, &vk).expect("Proof verification failed");
+                client
+                    .verify(&proof, &vk)
+                    .expect("Proof verification failed");
                 println!("Proof verification succeeded");
             }
 
@@ -1158,13 +1367,21 @@ async fn main() {
             let output = public_values_clone.read::<Output>();
 
             println!("Proof generated!");
-            println!("Output State Root: {:?}", output.state_root);
-            println!("Verified {} slots", output.results.len());
+            println!("Output:");
+            println!("  State root: {:?}", output.state_root);
+            println!("  Epoch: {}", output.epoch);
+            println!("  Point results: {}", output.point_results.len());
+            println!("  Account results: {}", output.account_results.len());
 
-            persist_proof(proof_kind, &proof, output).expect("Failed to persist proof");
+            let program_vkey = vk.bytes32();
+            persist_proof(program_vkey, proof_kind, &proof, output).expect("Failed to persist proof");
         }
     }
 }
+
+// =============================================================================
+// SERDE HELPERS
+// =============================================================================
 
 fn deserialize_address<'de, D>(deserializer: D) -> Result<Address, D::Error>
 where
