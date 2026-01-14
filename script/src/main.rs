@@ -129,6 +129,9 @@ impl ProofSource {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Protocol {
     Curve,
+    Balancer,
+    Frax,
+    Fxn,
     Yb,
     Pendle,
     Default,
@@ -138,9 +141,51 @@ impl Protocol {
     fn from_str(value: &str) -> Self {
         match value.to_lowercase().as_str() {
             "curve" => Self::Curve,
+            "balancer" => Self::Balancer,
+            "frax" => Self::Frax,
+            "fxn" => Self::Fxn,
             "yb" => Self::Yb,
             "pendle" => Self::Pendle,
             _ => Self::Default,
+        }
+    }
+
+    /// Get the toolkit's hardcoded slot values for this protocol.
+    /// These MUST match the values in votemarket_toolkit/shared/registry.py
+    /// Returns (point_weights, last_user_vote, vote_user_slope)
+    fn toolkit_slots(&self) -> Option<SlotConfig> {
+        match self {
+            Protocol::Curve => Some(SlotConfig {
+                weight_mapping_slot: U256::from(12),
+                last_vote_mapping_slot: U256::from(11),
+                user_slope_mapping_slot: U256::from(9),
+            }),
+            Protocol::Balancer => Some(SlotConfig {
+                weight_mapping_slot: U256::from(1000000008u64),
+                last_vote_mapping_slot: U256::from(1000000007u64),
+                user_slope_mapping_slot: U256::from(1000000005u64),
+            }),
+            Protocol::Frax => Some(SlotConfig {
+                weight_mapping_slot: U256::from(1000000011u64),
+                last_vote_mapping_slot: U256::from(1000000010u64),
+                user_slope_mapping_slot: U256::from(1000000008u64),
+            }),
+            Protocol::Fxn => Some(SlotConfig {
+                weight_mapping_slot: U256::from(1000000011u64),
+                last_vote_mapping_slot: U256::from(1000000010u64),
+                user_slope_mapping_slot: U256::from(1000000008u64),
+            }),
+            Protocol::Pendle => Some(SlotConfig {
+                weight_mapping_slot: U256::from(161),
+                last_vote_mapping_slot: U256::ZERO, // Pendle has no last_user_vote
+                user_slope_mapping_slot: U256::from(162),
+            }),
+            Protocol::Yb => Some(SlotConfig {
+                weight_mapping_slot: U256::from(1000000006u64),
+                last_vote_mapping_slot: U256::from(1000000005u64),
+                user_slope_mapping_slot: U256::from(1000000003u64),
+            }),
+            Protocol::Default => None,
         }
     }
 }
@@ -162,7 +207,7 @@ struct RequestItem {
     gauge: Option<Address>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 struct SlotConfig {
     #[serde(deserialize_with = "deserialize_u256")]
     weight_mapping_slot: U256,
@@ -549,7 +594,10 @@ fn gauge_time_slot(protocol: Protocol, gauge: Address, epoch: u64, base_slot: U2
         Protocol::Curve => gauge_time_slot_pre_vyper03(gauge, epoch, base_slot),
         Protocol::Yb => gauge_time_slot_yb(gauge, base_slot),
         Protocol::Pendle => gauge_time_slot_pendle(gauge, epoch, base_slot),
-        Protocol::Default => gauge_time_slot_default(gauge, epoch, base_slot),
+        // Balancer, Frax, Fxn use Vyper 0.3+ default slot calculation
+        Protocol::Balancer | Protocol::Frax | Protocol::Fxn | Protocol::Default => {
+            gauge_time_slot_default(gauge, epoch, base_slot)
+        }
     }
 }
 
@@ -563,11 +611,17 @@ fn user_vote_slots(
     let mut slots = Vec::new();
 
     // last_vote slot (not present for Pendle)
+    // Note: Curve uses DEFAULT (post-Vyper-0.3) layout for last_user_vote mapping,
+    // but pre-Vyper-0.3 layout for vote_user_slopes mapping
     if protocol != Protocol::Pendle {
         let last_vote_slot = match protocol {
-            Protocol::Curve => user_gauge_slot_pre_vyper03(account, gauge, last_vote_base_slot),
-            Protocol::Yb => user_gauge_slot_default(account, gauge, last_vote_base_slot),
-            Protocol::Default => user_gauge_slot_default(account, gauge, last_vote_base_slot),
+            // All protocols use default slot calculation for last_user_vote
+            Protocol::Curve
+            | Protocol::Balancer
+            | Protocol::Frax
+            | Protocol::Fxn
+            | Protocol::Yb
+            | Protocol::Default => user_gauge_slot_default(account, gauge, last_vote_base_slot),
             Protocol::Pendle => unreachable!(),
         };
         slots.push(SlotRequest {
@@ -579,9 +633,11 @@ fn user_vote_slots(
     // user_slope slot
     let vote_user_slope_slot = match protocol {
         Protocol::Curve => user_gauge_slot_pre_vyper03(account, gauge, user_slope_base_slot),
-        Protocol::Yb => user_gauge_slot_default(account, gauge, user_slope_base_slot),
         Protocol::Pendle => user_gauge_slot_pendle(account, gauge, user_slope_base_slot),
-        Protocol::Default => user_gauge_slot_default(account, gauge, user_slope_base_slot),
+        // Balancer, Frax, Fxn, Yb use Vyper 0.3+ default slot calculation
+        Protocol::Balancer | Protocol::Frax | Protocol::Fxn | Protocol::Yb | Protocol::Default => {
+            user_gauge_slot_default(account, gauge, user_slope_base_slot)
+        }
     };
 
     slots.push(SlotRequest {
@@ -593,7 +649,10 @@ fn user_vote_slots(
     let additional_offsets: Vec<(u64, &str)> = match protocol {
         Protocol::Yb => vec![(1, "user_bias"), (3, "user_end")],
         Protocol::Pendle => vec![(1, "user_bias")],
-        _ => vec![(2, "user_end")],
+        // Curve, Balancer, Frax, Fxn, Default: user_end is at slope + 2
+        Protocol::Curve | Protocol::Balancer | Protocol::Frax | Protocol::Fxn | Protocol::Default => {
+            vec![(2, "user_end")]
+        }
     };
 
     for (offset, label) in additional_offsets {
@@ -1232,9 +1291,29 @@ async fn main() {
     let proof_source = ProofSource::from_env();
     let verify_proof = parse_optional_bool_env("VERIFY_PROOF").unwrap_or(false);
 
-    let host_input = HostInput::load().expect("Invalid host input");
+    let mut host_input = HostInput::load().expect("Invalid host input");
     let (rpc_url, rpc_env_name) =
         resolve_rpc_url(host_input.chain_id).expect("Missing RPC_URL or chain RPC env");
+
+    // When using toolkit, use the toolkit's hardcoded slots instead of env/input slots.
+    // This ensures the slots match what the toolkit used when generating proofs.
+    if matches!(proof_source, ProofSource::Toolkit) {
+        if let Some(toolkit_slots) = host_input.protocol.toolkit_slots() {
+            println!(
+                "Using toolkit slots for protocol {:?}: weight={}, last_vote={}, slope={}",
+                host_input.protocol,
+                toolkit_slots.weight_mapping_slot,
+                toolkit_slots.last_vote_mapping_slot,
+                toolkit_slots.user_slope_mapping_slot
+            );
+            host_input.slots = toolkit_slots;
+        } else {
+            eprintln!(
+                "Warning: No toolkit slots defined for protocol {:?}, using input slots",
+                host_input.protocol
+            );
+        }
+    }
 
     let client = ProverClient::new();
     let mut stdin = SP1Stdin::new();
@@ -1287,6 +1366,7 @@ async fn main() {
                 ensure_input_json(&host_input, epoch).expect("Failed to create input JSON");
             let bundle =
                 run_toolkit(&input_path, rpc_env_name, &rpc_url).expect("Failed to run toolkit");
+
             build_input_from_toolkit(
                 state_root,
                 epoch,
