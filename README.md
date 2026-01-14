@@ -16,6 +16,7 @@ A Zero-Knowledge proof system for the Votemarket protocol, replacing expensive o
 - [Design Decisions](#design-decisions)
 - [Integration with Other Repositories](#integration-with-other-repositories)
 - [Getting Started](#getting-started)
+- [Quick Commands with Just](#quick-commands-with-just)
 - [Usage](#usage)
 - [Proof Modes](#proof-modes)
 - [Configuration](#configuration)
@@ -147,6 +148,7 @@ votemarket-sp1/
 │   └── Cargo.toml
 │
 ├── output/               # Generated proof artifacts
+├── justfile              # Command runner recipes
 └── README.md
 ```
 
@@ -506,12 +508,21 @@ sp1up
 ```bash
 git clone https://github.com/stake-dao/votemarket-sp1
 cd votemarket-sp1
+
+# Using just (recommended)
+just build
+
+# Or manually
 cargo build --release
 ```
 
 ### Build the Guest Circuit
 
 ```bash
+# Using just (recommended)
+just build-guest
+
+# Or manually
 cd program
 cargo prove build
 cd ..
@@ -519,11 +530,94 @@ cd ..
 
 This compiles the Rust guest code into a RISC-V ELF binary that SP1 can execute.
 
+## Quick Commands with Just
+
+This project uses [just](https://github.com/casey/just) as a command runner to simplify common operations. Install it with:
+
+```bash
+# macOS
+brew install just
+
+# Linux
+cargo install just
+
+# Or see https://github.com/casey/just#installation
+```
+
+### Available Commands
+
+Run `just` or `just --list` to see all available commands:
+
+```
+Available recipes:
+    default           # Show help
+    build             # Build the entire workspace in release mode
+    build-debug       # Build in debug mode
+    build-guest       # Build the guest circuit (RISC-V ELF)
+    clean             # Clean all build artifacts
+    vkey              # Get the VKEY (verification key)
+    mock              # Run in mock mode (no ZK proof)
+    mock-debug        # Run in mock mode with debug output
+    prove             # Generate a PLONK proof (production)
+    prove-fast        # Generate a PLONK proof without verification
+    prove-groth16     # Generate a Groth16 proof
+    prove-compressed  # Generate a compressed STARK proof
+    prove-core        # Generate a core STARK proof
+    prove-rpc         # Run in prove mode with RPC source
+    mock-rpc          # Run in mock mode with RPC source
+    prove-toolkit     # Run in prove mode with toolkit source
+    mock-toolkit      # Run in mock mode with toolkit source
+    prove-json        # Run in prove mode with JSON input file
+    mock-json         # Run in mock mode with JSON input file
+    test              # Run all tests
+    test-guest        # Run guest circuit tests only
+    test-script       # Run script tests only
+    test-shared       # Run shared library tests only
+    check             # Check code without building
+    fmt               # Format all code
+    fmt-check         # Check formatting
+    lint              # Run clippy linter
+    lint-fix          # Run clippy with fixes
+    toolkit-setup     # Setup Python venv and install toolkit
+    toolkit-activate  # Show activation hint
+    env-help          # Show environment variable reference
+    proof-kinds       # Show proof kinds explanation
+```
+
+### Common Workflows
+
+```bash
+# Development cycle
+just build-guest    # Build the circuit
+just vkey           # Get verification key for contract deployment
+just mock           # Test without generating a real proof
+
+# Production proof generation
+just prove          # Generate PLONK proof (recommended)
+just prove-groth16  # Alternative: Groth16 proof
+
+# With external data sources
+ETHEREUM_MAINNET_RPC_URL=https://... just prove-rpc
+just prove-json ./input.json
+
+# Testing
+just test           # Run all tests
+just lint           # Check code quality
+
+# Help
+just env-help       # Show all environment variables
+just proof-kinds    # Explain proof formats
+```
+
 ### Extract the Program VKEY
 
 The **Program Verification Key (VKEY)** is a `bytes32` value that uniquely identifies your compiled circuit. It's required when deploying the `ZKVerifier` contract on-chain.
 
 ```bash
+# Using just (recommended)
+just vkey
+
+# Or manually
 cd script
 VKEY_ONLY=true cargo run --release
 ```
@@ -547,6 +641,10 @@ The VKEY is also included in `output/proof.json` when generating proofs, under t
 ### Quick Start (Mock Mode)
 
 ```bash
+# Using just (recommended)
+just mock
+
+# Or manually
 cd script
 RUST_LOG=info cargo run --release
 ```
@@ -556,6 +654,10 @@ Mock mode executes the guest logic natively (no ZK proof generated). Use this fo
 ### Generate a Real Proof
 
 ```bash
+# Using just (recommended)
+just prove
+
+# Or manually
 cd script
 RUN_MODE=prove PROOF_KIND=plonk VERIFY_PROOF=true RUST_LOG=info cargo run --release
 ```
@@ -563,12 +665,14 @@ RUN_MODE=prove PROOF_KIND=plonk VERIFY_PROOF=true RUST_LOG=info cargo run --rele
 ### Using the Proof Toolkit
 
 ```bash
-# Install toolkit
-python -m venv .venv
+# Setup toolkit (one-time)
+just toolkit-setup
 source .venv/bin/activate
-pip install votemarket-toolkit
 
 # Run with toolkit as proof source
+ETHEREUM_MAINNET_RPC_URL=https://... just prove-toolkit
+
+# Or manually
 cd script
 PROOF_SOURCE=toolkit \
 ETHEREUM_MAINNET_RPC_URL=https://... \
@@ -661,6 +765,10 @@ After running in proof mode, artifacts are saved to `script/output/`:
 ### Guest Circuit Tests
 
 ```bash
+# Using just (recommended)
+just test-guest
+
+# Or manually
 cd program
 cargo test
 ```
@@ -668,8 +776,18 @@ cargo test
 ### Full Integration Test
 
 ```bash
+# Using just (recommended)
+just mock
+
+# Or manually
 cd script
 RUN_MODE=mock RUST_LOG=info cargo run --release
+```
+
+### Run All Tests
+
+```bash
+just test
 ```
 
 ## Future Evolution
