@@ -1,86 +1,515 @@
 # Votemarket SP1 Verifier
 
-This repository contains the Zero-Knowledge (ZK) circuit implementation for the Votemarket protocol using [Succinct SP1](https://succinct.xyz/).
+A Zero-Knowledge proof system for the Votemarket protocol, replacing expensive on-chain Merkle-Patricia Trie (MPT) verification with constant-size ZK proofs.
 
-## Overview
+## Table of Contents
 
-The **Votemarket SP1 Verifier** is a ZK Coprocessor designed to offload the verification of Ethereum Storage Proofs from the EVM to a ZK Virtual Machine.
+- [Introduction](#introduction)
+  - [What is Zero-Knowledge (ZK)?](#what-is-zero-knowledge-zk)
+  - [Why ZK for Votemarket?](#why-zk-for-votemarket)
+- [Problem Statement](#problem-statement)
+- [Solution: ZK Compression](#solution-zk-compression)
+- [Architecture](#architecture)
+  - [Repository Structure](#repository-structure)
+  - [System Components](#system-components)
+  - [Data Flow](#data-flow)
+- [Design Decisions](#design-decisions)
+- [Integration with Other Repositories](#integration-with-other-repositories)
+- [Getting Started](#getting-started)
+- [Usage](#usage)
+- [Proof Modes](#proof-modes)
+- [Configuration](#configuration)
+- [Testing](#testing)
+- [Future Evolution](#future-evolution)
 
-Instead of submitting large Merkle-Patricia Trie (MPT) branches as calldata to the blockchain (which is expensive and limits scalability), this system allows the `Bundler` to submit a single, constant-size ZK proof that attests to the validity of multiple storage slots.
+## Introduction
 
-## Rationale
+### What is Zero-Knowledge (ZK)?
 
-Votemarket relies on cross-chain data (e.g., Curve Gauge weights, user balances) to distribute rewards. Currently, this is achieved via **Oracle-based data population using Storage Proofs**.
+**Zero-Knowledge proofs** are a cryptographic technique that allows one party (the "prover") to prove to another party (the "verifier") that a statement is true, **without revealing any information beyond the validity of the statement itself**.
 
-### The Problem: Calldata Bottleneck
+In our context:
 
-- **Standard Approach:** Verifying a storage slot on-chain requires submitting the full path of RLP-encoded nodes for both the Account Trie and the Storage Trie.
-- **Cost:** A single proof can consume ~2-3KB of calldata.
-- **Limitation:** When batching claims for multiple campaigns, the transaction size quickly hits the block gas limit or the max transaction size, capping the number of actions a user can perform in one go.
+- **Statement**: "These storage values exist in Ethereum's state at block X"
+- **Proof**: A tiny cryptographic proof (~300 bytes) that this statement is true
+- **Benefit**: The verifier (smart contract) can trust the values without seeing the full proof data
 
-### The Solution: ZK Compression
+**Analogy**: Imagine proving you're over 18 without showing your ID. A ZK proof lets you prove the fact without revealing your birthdate, name, or any other information.
 
-By moving the verification logic to a ZKVM (SP1):
+### Why ZK for Votemarket?
 
-1.  **Input:** We feed the raw MPT proofs to the SP1 Guest program off-chain.
-2.  **Computation:** The Guest program cryptographically verifies the proofs against a trusted Block Hash.
-3.  **Output:** The Guest produces a tiny ZK proof and a list of "Public Values" (the verified storage values).
-4.  **On-Chain:** The smart contract verifies the ZK proof (cheap) and trusts the Public Values.
+Votemarket is a **cross-chain incentive protocol** that distributes rewards based on voting data from Ethereum mainnet (e.g., Curve gauge weights, user votes). This data must be **cryptographically verified** on L2 chains (Arbitrum, Optimism, etc.) before rewards can be claimed.
 
-**Result:** We can verify hundreds of storage slots in a single transaction with constant gas overhead.
+**The challenge**: Ethereum's state is stored in a Merkle-Patricia Trie (MPT). To prove a storage value, you need to submit the entire path from the state root to the value (typically **2-3KB of calldata per proof**).
+
+**The solution**: Use ZK proofs to verify MPT proofs off-chain, then submit a single ~300 byte proof on-chain that attests to hundreds of verified values.
+
+## Problem Statement
+
+### The Calldata Bottleneck
+
+The current Votemarket implementation uses **on-chain MPT verification**:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                     CURRENT APPROACH (MPT)                          │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│   User wants to claim rewards for 10 gauges + their vote data       │
+│                                                                     │
+│   Each proof requires:                                              │
+│   ├── Account proof: ~1-2KB (path to GaugeController account)       │
+│   └── Storage proof: ~1KB (path to specific storage slot)           │
+│                                                                     │
+│   Total for 10 claims: ~20-30KB calldata                            │
+│                                                                     │
+│   Problems:                                                         │
+│   ├── High gas costs (calldata is expensive)                        │
+│   ├── Transaction size limits (~128KB max)                          │
+│   ├── Block gas limit constraints                                   │
+│   └── Poor UX (users must split claims across multiple txs)         │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Real-World Impact
+
+| Scenario          | MPT Approach    | Limitation              |
+| ----------------- | --------------- | ----------------------- |
+| Single claim      | ~3KB calldata   | Expensive but works     |
+| 10 claims batched | ~30KB calldata  | Very expensive          |
+| 50 claims batched | ~150KB calldata | Exceeds tx size limit   |
+| 100+ claims       | Impossible      | Cannot fit in single tx |
+
+**Bottom line**: The current system caps scalability and increases costs for users and the protocol.
+
+## Solution: ZK Compression
+
+### How It Works
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                      NEW APPROACH (ZK)                              │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│   OFF-CHAIN (this repository)                                       │
+│   ┌─────────────────────────────────────────────────────────┐       │
+│   │  1. Collect MPT proofs from Ethereum RPC                │       │
+│   │  2. Feed proofs to SP1 ZKVM                             │       │
+│   │  3. ZKVM verifies all proofs cryptographically          │       │
+│   │  4. ZKVM outputs: verified values + ZK proof            │       │
+│   └─────────────────────────────────────────────────────────┘       │
+│                              │                                      │
+│                              ▼                                      │
+│   ON-CHAIN (contracts-monorepo)                                     │
+│   ┌─────────────────────────────────────────────────────────┐       │
+│   │  1. Receive: ZK proof (~300B) + public values (~1KB)    │       │
+│   │  2. Verify ZK proof (constant gas: ~300k)               │       │
+│   │  3. Trust the verified values                           │       │
+│   │  4. Insert into Oracle for claims                       │       │
+│   └─────────────────────────────────────────────────────────┘       │
+│                                                                     │
+│   Result: 100+ claims verified in ONE transaction                   │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Benefits Summary
+
+| Metric                | MPT (Before) | ZK (After)      | Improvement      |
+| --------------------- | ------------ | --------------- | ---------------- |
+| Calldata per claim    | ~3KB         | ~10 bytes       | **300x smaller** |
+| Max claims per tx     | ~40          | **Unlimited\*** | **Unbounded**    |
+| Gas cost (100 claims) | ~5M gas      | ~400k gas       | **12x cheaper**  |
+| User experience       | Multiple txs | Single tx       | **Much better**  |
+
+\*Practically limited by public values encoding, but can handle 500+ claims easily.
 
 ## Architecture
 
-The project is organized as a Rust workspace:
+### Repository Structure
 
-- **`program/` (Guest, runs inside the ZKVM):**
+```
+votemarket-sp1/
+├── program/              # Guest circuit (runs inside ZKVM)
+│   ├── src/
+│   │   └── main.rs       # MPT verification logic
+│   └── Cargo.toml
+│
+├── script/               # Host application (runs on server)
+│   ├── src/
+│   │   └── main.rs       # Proof orchestration
+│   └── Cargo.toml
+│
+├── shared/               # Shared types between guest and host
+│   ├── src/
+│   │   └── lib.rs        # Input/Output structs
+│   └── Cargo.toml
+│
+├── output/               # Generated proof artifacts
+└── README.md
+```
 
-  - Deterministic logic that **verifies storage proofs**.
-  - Input: `(state_root, proofs[])`.
-  - Output (public values): `(state_root, results[])`.
-  - Think of it as the on-chain verifier logic, but executed inside SP1.
+### System Components
 
-- **`script/` (Host, runs on your machine/server):**
+#### 1. Guest Circuit (`program/`)
 
-  - Orchestration code that **prepares inputs** and **runs the guest**.
-  - Fetches proofs from RPC (or builds mock proofs in dev).
-  - Executes the guest in mock mode or generates a ZK proof.
-  - Think of it as the client that feeds data to the circuit and reads its output.
+The **guest** is the code that runs inside the SP1 Zero-Knowledge Virtual Machine (ZKVM). It:
 
-- **`shared/`:**
-  - Shared data structures (`Input`, `Output`, `StorageProofRequest`) used by both Guest and Host to ensure serialization compatibility.
-  - **Input:** `state_root` (bytes32) + list of `(account, slot, account_proof, storage_proof)`.
-  - **Output:** `state_root` (bytes32) + list of `(account, slot, value)`.
+- Receives inputs (state root, MPT proofs)
+- Verifies each MPT proof cryptographically
+- Extracts the storage values
+- Commits the verified values as "public outputs"
 
-> **Note:** The `Output` struct is what gets encoded as "Public Values" and passed to the Solidity Verifier.
+**Think of it as**: The same verification logic that runs on-chain today, but executed in a provable environment.
+
+```rust
+// Simplified guest logic
+fn main() {
+    let input = sp1_zkvm::io::read::<Input>();
+
+    // Verify gauge point data (total votes per gauge)
+    let point_results = verify_point_proofs(&input);
+
+    // Verify account data (user votes)
+    let account_results = verify_account_proofs(&input);
+
+    // Commit verified data as public output
+    sp1_zkvm::io::commit(&Output {
+        state_root: input.state_root,
+        epoch: input.epoch,
+        point_results,
+        account_results,
+    });
+}
+```
+
+#### 2. Host Application (`script/`)
+
+The **host** is the orchestration layer that:
+
+- Fetches MPT proofs from Ethereum RPC (or the proof toolkit)
+- Prepares inputs for the guest
+- Runs the guest in the ZKVM
+- Generates the ZK proof
+- Saves proof artifacts for on-chain submission
+
+**Think of it as**: The "driver" that feeds data to the circuit and collects the output.
+
+#### 3. Shared Types (`shared/`)
+
+Defines the data structures used by both guest and host:
+
+```rust
+// Input to the circuit
+pub struct Input {
+    pub state_root: B256,           // Ethereum state root
+    pub epoch: u64,                 // Week-aligned timestamp
+    pub point_requests: Vec<PointRequest>,    // Gauge data requests
+    pub account_requests: Vec<AccountRequest>, // User vote requests
+}
+
+// Output from the circuit (becomes public values)
+pub struct Output {
+    pub state_root: B256,
+    pub epoch: u64,
+    pub point_results: Vec<PointResult>,      // Verified gauge data
+    pub account_results: Vec<AccountResult>,  // Verified user votes
+}
+```
+
+### Data Flow
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                            END-TO-END FLOW                                   │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+    ┌─────────────┐         ┌─────────────┐         ┌─────────────┐
+    │  Ethereum   │         │   Toolkit   │         │    Host     │
+    │    RPC      │◄───────►│  (Python)   │◄───────►│   (Rust)    │
+    └─────────────┘         └─────────────┘         └──────┬──────┘
+                                                           │
+                            ┌──────────────────────────────┘
+                            │
+                            ▼
+                    ┌───────────────┐
+                    │    SP1 ZKVM   │
+                    │    (Guest)    │
+                    │               │
+                    │  ┌─────────┐  │
+                    │  │ Verify  │  │
+                    │  │  MPT    │  │
+                    │  │ Proofs  │  │
+                    │  └────┬────┘  │
+                    │       │       │
+                    │       ▼       │
+                    │  ┌─────────┐  │
+                    │  │ Commit  │  │
+                    │  │ Output  │  │
+                    │  └─────────┘  │
+                    └───────┬───────┘
+                            │
+                            ▼
+                    ┌───────────────┐
+                    │  ZK Proof +   │
+                    │ Public Values │
+                    └───────┬───────┘
+                            │
+                            ▼
+    ┌───────────────────────────────────────────────────────────────┐
+    │                      ON-CHAIN (L2)                            │
+    │  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐        │
+    │  │ ZKVerifier  │───►│   Oracle    │───►│ Votemarket  │        │
+    │  │  (verify)   │    │  (store)    │    │  (claims)   │        │
+    │  └─────────────┘    └─────────────┘    └─────────────┘        │
+    └───────────────────────────────────────────────────────────────┘
+```
+
+## Design Decisions
+
+### Public Values (Circuit Output)
+
+The ZK circuit commits **public values** (data that becomes visible on-chain after proof verification). These values are ABI-encoded and passed to `ZKVerifier.verifyAndInsert()`:
+
+```solidity
+struct ZKOutput {
+    bytes32 stateRoot;              // Ethereum state root verified against
+    uint256 epoch;                  // Week-aligned timestamp
+    PointResult[] pointResults;     // Verified gauge weight data
+    AccountResult[] accountResults; // Verified user vote data
+}
+
+struct PointResult {
+    address gauge;     // Gauge address
+    uint256 epoch;     // Epoch for this data point
+    uint256 bias;      // Total votes (points_weight[gauge][epoch].bias)
+}
+
+struct AccountResult {
+    address account;   // Voter address
+    address gauge;     // Gauge voted for
+    uint256 slope;     // Vote decay rate
+    uint256 end;       // When vote expires
+    uint256 lastVote;  // Last vote timestamp (0 for Pendle)
+}
+```
+
+The `proof_bytes` and `public_values` from the proof artifacts are what get submitted on-chain.
+
+### Trust Model
+
+The ZK circuit receives a `state_root` as input and trusts it implicitly. It does not validate the state root against a block hash inside the circuit. Instead, **validation happens on-chain**: the `ZKVerifier` contract checks that the proof's `state_root` matches the one stored in the Oracle for the given epoch.
+
+This design reuses the existing trust infrastructure. The Oracle already stores validated block headers (including state roots) per epoch, populated by the L1→L2 bridge or authorized providers. By validating against the Oracle, the ZK path maintains the same security guarantees as the MPT path.
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         TRUST FLOW                                  │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│   L1 Block Header ──► Oracle.insertBlockNumber() ──► Stored         │
+│                                                       stateRoot     │
+│                                                          │          │
+│   ZK Proof ──► ZKVerifier.verifyAndInsert() ──► Compare against     │
+│                                                 stored stateRoot    │
+│                                                          │          │
+│                                              Match? ──► Insert      │
+│                                              Mismatch? ──► Revert   │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Semantic Output Format
+
+Rather than outputting raw storage slots (`address, slot, value`), the circuit outputs **semantic structs** that directly map to the Oracle's data model:
+
+- **PointResult**: Contains `gauge`, `epoch`, and `bias` (total votes for a gauge)
+- **AccountResult**: Contains `account`, `gauge`, `slope`, `end`, and `lastVote` (user's vote data)
+
+This approach has several benefits:
+
+1. **Readability**: The output is self-documenting. You can understand what each field means without knowing Ethereum storage layouts
+2. **On-chain efficiency**: The Solidity decoder directly unpacks into Oracle-compatible structs
+3. **Type safety**: Fields have explicit types rather than being raw `uint256` values
+4. **Protocol awareness**: The circuit handles protocol-specific differences (e.g., Pendle lacks `lastVote`)
+
+### Parallel Verification Paths
+
+The ZKVerifier **complements** rather than replaces the existing MPT verifier. Both paths coexist:
+
+```
+                    ┌─────────────────┐
+                    │   User/Bundler  │
+                    └────────┬────────┘
+                             │
+              ┌──────────────┴──────────────┐
+              │                             │
+              ▼                             ▼
+    ┌─────────────────┐           ┌─────────────────┐
+    │   MPT Verifier  │           │   ZK Verifier   │
+    │   (existing)    │           │     (new)       │
+    └────────┬────────┘           └────────┬────────┘
+             │                             │
+             └──────────────┬──────────────┘
+                            │
+                            ▼
+                    ┌───────────────┐
+                    │    Oracle     │
+                    │  (shared)     │
+                    └───────────────┘
+```
+
+This design enables:
+
+- **Gradual migration**: Start with ZK for high-volume batches, keep MPT for edge cases
+- **Fallback option**: If ZK proving fails or is unavailable, MPT remains operational
+- **A/B testing**: Compare gas costs and reliability before full migration
+- **User choice**: Bundlers can optimize based on batch size and urgency
+
+### Single-Epoch Batching
+
+Each ZK proof covers data from **one epoch only**. The epoch is explicitly included in both the circuit input and output:
+
+```rust
+// Input
+pub struct Input {
+    pub state_root: B256,
+    pub epoch: u64,  // ◄── Explicit epoch
+    pub point_requests: Vec<PointRequest>,
+    pub account_requests: Vec<AccountRequest>,
+}
+
+// Output
+pub struct Output {
+    pub state_root: B256,
+    pub epoch: u64,  // ◄── Echoed in output
+    pub point_results: Vec<PointResult>,
+    pub account_results: Vec<AccountResult>,
+}
+```
+
+Including the epoch explicitly provides:
+
+1. **Replay protection**: A proof for epoch N cannot be replayed for epoch M
+2. **Self-contained verification**: The verifier knows exactly which epoch's data is being proven
+3. **Simpler implementation**: No need to handle cross-epoch edge cases
+4. **Clear trust boundaries**: Each proof is bound to a specific block/state
+
+Multi-epoch batching (proving data across multiple epochs in one proof) is a potential future enhancement using recursive proof composition.
+
+### Prover Infrastructure
+
+Proof generation uses **Succinct's Prover network**: a hosted proving service that handles the computationally intensive ZK proof generation:
+
+```
+┌─────────────────┐      ┌─────────────────┐      ┌─────────────────┐
+│   Host Script   │ ──►  │  Prover Network │ ──►  │   ZK Proof      │
+│  (prepares      │      │  (generates     │      │  (submit to     │
+│   inputs)       │      │   proof)        │      │   chain)        │
+└─────────────────┘      └─────────────────┘      └─────────────────┘
+```
+
+Benefits of using the Prover Network:
+
+- **No infrastructure overhead**: No need to maintain GPU clusters or specialized hardware
+- **Scalability**: The Prover network handles proof generation spikes automatically
+- **Reliability**: Managed service with uptime guarantees
+- **Cost efficiency**: Pay-per-proof model vs. fixed infrastructure costs
+
+The architecture supports switching to self-hosted proving later if latency or cost requirements change.
+
+## Integration with Other Repositories
+
+This repository is part of a larger system:
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│                        VOTEMARKET ECOSYSTEM                        │
+├────────────────────────────────────────────────────────────────────┤
+│                                                                    │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │               contracts-monorepo                            │   │
+│  │  ┌──────────────────────────────────────────────────────┐   │   │
+│  │  │  packages/votemarket/                                │   │   │
+│  │  │  ├── src/oracle/Oracle.sol       (stores verified    │   │   │
+│  │  │  │                                data per epoch)    │   │   │
+│  │  │  ├── src/verifiers/Verifier.sol  (MPT verification)  │   │   │
+│  │  │  ├── src/verifiers/ZKVerifier.sol (ZK verification)  │◄──┼───┼──────
+│  │  │  └── src/Votemarket.sol          (claims/rewards)    │   │   │
+│  │  └──────────────────────────────────────────────────────┘   │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│                              ▲                                     │
+│                              │ proofs                              │
+│                              │                                     │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │               votemarket-sp1 (this repo)                    │   │
+│  │  ├── program/    (ZK circuit - verifies MPT proofs)         │   │
+│  │  ├── script/     (host - orchestrates proof generation)     │   │
+│  │  └── shared/     (types shared between guest/host)          │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│                              ▲                                     │
+│                              │ MPT proofs                          │
+│                              │                                     │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │               votemarket-proof-toolkit                      │   │
+│  │  (Python library that fetches proofs from Ethereum RPC)     │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│                                                                    │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+### contracts-monorepo
+
+[`Github repository`](https://github.com/stake-dao/contracts-monorepo/tree/main/packages/votemarket)
+
+Key contracts:
+
+- **Oracle.sol**: Stores verified voting data per epoch
+- **Verifier.sol**: Existing MPT verification (will coexist with ZK)
+- **ZKVerifier.sol**: New ZK verification contract
+- **Votemarket.sol**: Handles campaign creation and reward claims
+
+The **ZKVerifier** contract:
+
+1. Verifies SP1 proofs using Succinct's deployed verifier
+2. Decodes public values from the proof
+3. Validates state_root against Oracle's epoch block
+4. Inserts verified data into Oracle
+
+### votemarket-proof-toolkit
+
+[`Github repository`](https://github.com/stake-dao/votemarket-proof-toolkit)
+
+A Python library that:
+
+- Connects to Ethereum RPC
+- Fetches storage proofs (eth_getProof)
+- Computes correct storage slots for different protocols
+- Formats proofs for the ZK circuit
 
 ## Getting Started
 
 ### Prerequisites
 
-- Rust
-- SP1 Toolchain
+1. **Rust** (latest stable)
+2. **SP1 Toolchain**
 
 ```bash
+# Install SP1
 curl -L https://sp1.succinct.xyz | bash
 sp1up
 ```
 
 ### Installation
 
-Clone the repository and install dependencies:
-
 ```bash
-git clone <repo-url>
+git clone https://github.com/stake-dao/votemarket-sp1
 cd votemarket-sp1
 cargo build --release
 ```
 
-## Usage
-
-### 1. Build the Guest Program (SP1 ELF)
-
-This compiles the Rust logic into a RISC-V ELF binary executable by the ZKVM.
+### Build the Guest Circuit
 
 ```bash
 cd program
@@ -88,86 +517,118 @@ cargo prove build
 cd ..
 ```
 
-### 2. Run the Host (Mock Mode)
+This compiles the Rust guest code into a RISC-V ELF binary that SP1 can execute.
 
-The current script is configured to run in **Mock Mode** by default. This executes the Guest logic natively on your CPU to verify correctness without generating a heavy ZK proof.
+### Extract the Program VKEY
+
+The **Program Verification Key (VKEY)** is a `bytes32` value that uniquely identifies your compiled circuit. It's required when deploying the `ZKVerifier` contract on-chain.
+
+```bash
+cd script
+VKEY_ONLY=true cargo run --release
+```
+
+Output:
+```
+Program VKEY: 0x0092a652ae3e8ecc3856d301b6d474f25a6bb36d0a4c23880261d3ae26608c6b
+```
+
+**Key points about the VKEY:**
+
+- **Deterministic**: The VKEY is derived from the compiled ELF binary. Running this command multiple times produces the same value
+- **Circuit identity**: The VKEY acts as a fingerprint for your circuit. The on-chain verifier uses it to ensure proofs were generated by the expected program
+- **Rebuild = new VKEY**: If you modify the guest code (`program/src/main.rs`) and rebuild, you'll get a different VKEY and must redeploy the `ZKVerifier` contract
+- **Deployment parameter**: Pass this value as the `_programVKey` constructor argument when deploying `ZKVerifier.sol`
+
+The VKEY is also included in `output/proof.json` when generating proofs, under the `program_vkey` field.
+
+## Usage
+
+### Quick Start (Mock Mode)
 
 ```bash
 cd script
 RUST_LOG=info cargo run --release
 ```
 
-### 3. Run the Host (Proof Mode)
+Mock mode executes the guest logic natively (no ZK proof generated). Use this for development and testing.
 
-Set `RUN_MODE=prove` to generate a real proof. You can choose the proof format and optionally verify the proof locally.
+### Generate a Real Proof
 
 ```bash
 cd script
 RUN_MODE=prove PROOF_KIND=plonk VERIFY_PROOF=true RUST_LOG=info cargo run --release
 ```
 
-Proof artifacts are saved under `script/output/` by default:
+### Using the Proof Toolkit
 
-- `proof.bin` (bincode-serialized SP1 proof bundle)
-- `proof.json` (proof bytes, public values, and decoded outputs)
+```bash
+# Install toolkit
+python -m venv .venv
+source .venv/bin/activate
+pip install votemarket-toolkit
 
-You can override the file names with `PROOF_OUTPUT` and `PROOF_JSON`.
+# Run with toolkit as proof source
+cd script
+PROOF_SOURCE=toolkit \
+ETHEREUM_MAINNET_RPC_URL=https://... \
+RUN_MODE=prove \
+PROOF_KIND=plonk \
+RUST_LOG=info cargo run --release
+```
 
-#### Output (`proof.json`)
+## Proof Modes
+
+SP1 supports multiple proof formats with different trade-offs:
+
+| Mode         | Description      | On-chain Verifiable | Use Case                  |
+| ------------ | ---------------- | ------------------- | ------------------------- |
+| `core`       | Raw SP1 proof    | No                  | Development only          |
+| `compressed` | Compressed proof | No                  | Testing                   |
+| `plonk`      | PLONK proof      | **Yes**             | **Production**            |
+| `groth16`    | Groth16 proof    | **Yes**             | Production (incoming alt) |
+
+**For actual production, use `PROOF_KIND=plonk`** - this generates proofs that can be verified by on-chain contracts.
+
+### Output Artifacts
+
+After running in proof mode, artifacts are saved to `script/output/`:
+
+- `proof.bin`: Binary-serialized proof bundle
+- `proof.json`: Human-readable proof data
 
 ```json
 {
-  "proof_kind": "plonk|groth16|compressed|core",
-  "proof_bytes": "0x... (plonk/groth16 only)",
+  "proof_kind": "plonk",
+  "proof_bytes": "0x...",
   "public_values_raw": "0x...",
   "public_values_hash": "0x...",
-  "public_values_hash_bn254": "0x...",
   "output": {
     "state_root": "0x...",
-    "results": [
-      {
-        "account": "0x...",
-        "slot": "0x...",
-        "value": "0x..."
-      }
-    ]
+    "epoch": 1700000000,
+    "point_results": [...],
+    "account_results": [...]
   }
 }
 ```
 
-- `proof_kind`: proof format (`core`, `compressed`, `plonk`, `groth16`).
-- `proof_bytes`: hex-encoded proof bytes for on-chain verifiers (only present for `plonk`/`groth16`).
-- `public_values_raw`: hex-encoded bytes committed by the guest (`Output` serialized via `sp1_zkvm::io::commit`).
-- `public_values_hash`: SHA-256 hash of `public_values_raw` (hex).
-- `public_values_hash_bn254`: BN254 field element encoding of the same digest (hex) used by the Solidity verifiers.
-- `output`: decoded public values for convenience.
-- `output.state_root`: state root the guest validated against.
-- `output.results[]`: list of `(account, slot, value)` storage values proven under that state root.
+## Configuration
 
-`proof_bytes` and `public_values_raw` are the values broadcasted on-chain.
+### Environment Variables
 
-### 4. Inputs (Env or JSON)
+| Variable                   | Description                              | Default |
+| -------------------------- | ---------------------------------------- | ------- |
+| `RUN_MODE`                 | `mock` or `prove`                        | `mock`  |
+| `PROOF_KIND`               | `core`, `compressed`, `plonk`, `groth16` | `plonk` |
+| `VERIFY_PROOF`             | Verify proof locally after generation    | `false` |
+| `PROOF_SOURCE`             | `rpc` or `toolkit`                       | `rpc`   |
+| `INPUT_JSON`               | Path to input JSON file                  | -       |
+| `ETHEREUM_MAINNET_RPC_URL` | Ethereum RPC endpoint                    | -       |
+| `CHAIN_ID`                 | Chain ID for RPC calls                   | `1`     |
+| `BLOCK_NUMBER`             | Block number for proofs                  | Latest  |
+| `PROTOCOL`                 | `curve`, `yb`, `pendle`                  | `curve` |
 
-You can pass inputs via env vars or a JSON file:
-
-```bash
-ETHEREUM_MAINNET_RPC_URL=... \
-CHAIN_ID=1 \
-BLOCK_NUMBER=23438749 \
-PROTOCOL=curve \
-GAUGE_CONTROLLER=0x... \
-GAUGE=0x... \
-ACCOUNT=0x... \
-WEIGHT_MAPPING_SLOT=0x... \
-LAST_VOTE_MAPPING_SLOT=0x... \
-USER_SLOPE_MAPPING_SLOT=0x... \
-RUST_LOG=info cargo run --release
-```
-
-Note: for other chains, set the toolkit-style RPC env var (`ARBITRUM_MAINNET_RPC_URL`, `OPTIMISM_MAINNET_RPC_URL`,
-`BASE_MAINNET_RPC_URL`, `POLYGON_MAINNET_RPC_URL`, `BSC_MAINNET_RPC_URL`) and update `CHAIN_ID` accordingly.
-
-Or provide a JSON file that follows the canonical host schema:
+### Input JSON Format
 
 ```json
 {
@@ -175,97 +636,73 @@ Or provide a JSON file that follows the canonical host schema:
   "block_number": 23438749,
   "epoch": 1758758400,
   "protocol": "curve",
-  "gauge_controller": "0x0000000000000000000000000000000000000000",
+  "gauge_controller": "0x2F50D538606Fa9EDD2B11E2446BEb18C9D5846bB",
   "slots": {
-    "weight_mapping_slot": "0x00",
-    "last_vote_mapping_slot": "0x00",
-    "user_slope_mapping_slot": "0x00"
+    "weight_mapping_slot": "0x...",
+    "last_vote_mapping_slot": "0x...",
+    "user_slope_mapping_slot": "0x..."
   },
   "requests": [
     {
-      "type": "account_data",
-      "account": "0x0000000000000000000000000000000000000000",
-      "gauge": "0x0000000000000000000000000000000000000000"
+      "type": "point_data",
+      "gauge": "0x..."
     },
     {
-      "type": "point_data",
-      "gauge": "0x0000000000000000000000000000000000000000"
+      "type": "account_data",
+      "account": "0x...",
+      "gauge": "0x..."
     }
   ]
 }
 ```
 
-Save it and pass `INPUT_JSON=/path/to/host_input.json`.
-
-### 5. Toolkit Proof Source
-
-To reuse the VoteMarket proof toolkit as the proof input generator, set `PROOF_SOURCE=toolkit`.
-The host will generate (or reuse) the host JSON and call `script/toolkit_adapter.py`.
-It also forwards the chain-specific RPC env var to the toolkit, so you only set it once in this repo.
-
-Quickstart (after installing the toolkit and setting `ETHEREUM_MAINNET_RPC_URL`):
-
-Install the toolkit into a local Python environment in this repo:
-
-```bash
-cd /path/to/votemarket-sp1
-python -m venv .venv
-source .venv/bin/activate
-pip install votemarket-toolkit
-```
-
-Or, with `uv`:
-
-```bash
-cd /path/to/votemarket-sp1
-uv venv .venv
-uv pip install votemarket-toolkit
-```
-
-Then run from the `votemarket-sp1/script` directory:
-
-```bash
-cd /path/to/votemarket-sp1/script
-PROOF_SOURCE=toolkit RUN_MODE=prove PROOF_KIND=plonk VERIFY_PROOF=true RUST_LOG=info cargo run --release
-```
-
-If the host cannot locate your Python interpreter, set it explicitly:
-
-```bash
-export PYTHON_BIN="$(which python)"
-```
-
-If you want to use a local checkout of the toolkit instead of the PyPI package:
-
-```bash
-export TOOLKIT_ROOT=/path/to/votemarket-proof-toolkit
-```
-
-Then rerun the command:
-
-```bash
-PROOF_SOURCE=toolkit RUN_MODE=prove PROOF_KIND=plonk VERIFY_PROOF=true RUST_LOG=info cargo run --release
-```
-
-Refer to the [VoteMarket Proof Toolkit README](https://github.com/stake-dao/votemarket-proof-toolkit) for further examples and advanced configuration.
-
-Ensure the toolkit RPC env vars are configured (see its README).
-
-### How the two apps relate (end-to-end flow)
-
-1. **Host (`script/`) collects inputs**: state root + MPT proofs (real RPC or mock).
-2. **Host runs Guest (`program/`)**: feeds inputs into the ZKVM using the compiled ELF.
-3. **Guest verifies proofs**: computes and commits public outputs.
-4. **Host reads outputs**: uses them directly (mock mode) or wraps them in a ZK proof.
-
-If you only build `program/`, nothing runs by itself. The `script/` is the entrypoint that drives the flow.
-
 ## Testing
 
-To run the unit tests for the MPT verification logic, run the following command:
+### Guest Circuit Tests
 
 ```bash
 cd program
 cargo test
-cd ..
 ```
+
+### Full Integration Test
+
+```bash
+cd script
+RUN_MODE=mock RUST_LOG=info cargo run --release
+```
+
+## Future Evolution
+
+### Planned Enhancements
+
+1. **Multi-epoch batching**: Use recursive proofs to verify multiple epochs in one proof
+2. **Proof caching**: Store and reuse proofs for common requests
+3. **Self-hosted prover**: Option to run prover infrastructure for lower latency
+
+### Potential Optimizations
+
+1. **Precomputed circuits**: Pre-generate circuits for common request patterns
+2. **Incremental proving**: Update proofs incrementally as new data arrives
+3. **Proof aggregation**: Combine multiple proofs into one for even lower costs
+
+## Glossary
+
+| Term              | Definition                                                          |
+| ----------------- | ------------------------------------------------------------------- |
+| **ZKVM**          | Zero-Knowledge Virtual Machine - executes code and generates proofs |
+| **SP1**           | Succinct's ZKVM implementation                                      |
+| **Guest**         | Code that runs inside the ZKVM                                      |
+| **Host**          | Code that orchestrates the ZKVM execution                           |
+| **MPT**           | Merkle-Patricia Trie - Ethereum's state storage structure           |
+| **Public Values** | Data committed by the guest, visible in the proof                   |
+| **PLONK**         | A proof system that generates small, verifiable proofs              |
+| **Epoch**         | A week-aligned timestamp used for voting periods                    |
+| **State Root**    | Root hash of Ethereum's state trie at a given block                 |
+
+## Resources
+
+- [SP1 Documentation](https://docs.succinct.xyz/)
+- [Succinct Prover Network](https://docs.succinct.xyz/docs/protocol/introduction)
+- [Ethereum MPT Specification](https://ethereum.org/en/developers/docs/data-structures-and-encoding/patricia-merkle-trie/)
+- [Votemarket Documentation](https://docs.stakedao.org/votemarket)
