@@ -77,12 +77,13 @@ def main() -> int:
 
     gauge_proofs = []
     for gauge in gauges_for_point:
-        gauge_proof = toolkit.get_gauge_proof(
+        result = toolkit.get_gauge_proof(
             protocol=protocol,
             gauge_address=gauge,
             current_epoch=epoch,
             block_number=block_number,
         )
+        gauge_proof = result.unwrap()
         gauge_proofs.append(
             {
                 "gauge": gauge,
@@ -96,12 +97,13 @@ def main() -> int:
     user_proofs = []
     unique_users = {(account.lower(), gauge.lower()): (account, gauge) for account, gauge in users_for_account}
     for account, gauge in unique_users.values():
-        user_proof = toolkit.get_user_proof(
+        result = toolkit.get_user_proof(
             protocol=protocol,
             gauge_address=gauge,
             user=account,
             block_number=block_number,
         )
+        user_proof = result.unwrap()
         user_proofs.append(
             {
                 "account": account,
