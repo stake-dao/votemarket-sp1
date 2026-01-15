@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-sp1-sdk = "3.0.0"
+sp1-sdk = { version = "5.2", default-features = false, features = ["network"] }
 shared = { path = "../shared" }
 alloy-primitives = { version = "0.8.14", features = ["serde", "rlp"] }
 rlp = "0.5"

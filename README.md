@@ -40,12 +40,16 @@ brew install just
 cargo install just
 ```
 
+4. **Python 3.10+** (for the proof toolkit)
+
 ### Installation
 
 ```bash
 git clone https://github.com/stake-dao/votemarket-sp1
 cd votemarket-sp1
 just build
+just build-guest    # Build the guest code
+just toolkit-setup  # Install Python dependencies
 ```
 
 ### Build the Guest Circuit
@@ -67,10 +71,10 @@ just vkey
 Output:
 
 ```
-Program VKEY: 0x0092a652ae3e8ecc3856d301b6d474f25a6bb36d0a4c23880261d3ae26608c6b
+Program VKEY: 0x00dc92847478212b289df1a1eeddf1a795eac6cd936fc9bdc0ae434c59e75953
 ```
 
-**Note**: Modifying `program/src/main.rs` and rebuilding produces a different VKEY, requiring contract redeployment.
+**Note**: Any change to `program/src/main.rs`, its dependencies, or the Rust compiler version will produce a different VKEY on rebuild and will require redeploying the contract.
 
 ## Repository Structure
 
@@ -161,20 +165,66 @@ After running in proof mode, artifacts are saved to `output/`:
 
 ## Configuration
 
-## Environment Variables
+### Environment Variables
 
-| Variable                   | Description                              | Default |
-| -------------------------- | ---------------------------------------- | ------- |
-| `RUN_MODE`                 | `mock` or `prove`                        | `mock`  |
-| `PROOF_KIND`               | `core`, `compressed`, `plonk`, `groth16` | `plonk` |
-| `VERIFY_PROOF`             | Verify proof locally after generation    | `false` |
-| `PROOF_SOURCE`             | `rpc` or `toolkit`                       | `rpc`   |
-| `INPUT_JSON`               | Path to input JSON file                  | -       |
-| `ETHEREUM_MAINNET_RPC_URL` | Ethereum RPC endpoint                    | -       |
-| `CHAIN_ID`                 | Chain ID for RPC calls                   | `1`     |
-| `BLOCK_NUMBER`             | Block number for proofs                  | Latest  |
-| `PROTOCOL`                 | `curve`, `yb`, `pendle`                  | `curve` |
-| `NETWORK_PRIVATE_KEY`      | Private key for Succinct Prover Network  | -       |
+#### Core Settings
+
+| Variable       | Description                              | Default   |
+| -------------- | ---------------------------------------- | --------- |
+| `RUN_MODE`     | `mock` or `prove`                        | `mock`    |
+| `PROOF_KIND`   | `core`, `compressed`, `plonk`, `groth16` | `plonk`   |
+| `VERIFY_PROOF` | Verify proof locally after generation    | `false`   |
+| `PROOF_SOURCE` | `rpc` or `toolkit`                       | `toolkit` |
+| `INPUT_JSON`   | Path to input JSON file (overrides env)  | -         |
+
+#### Blockchain Settings
+
+| Variable                   | Description                                        | Default    |
+| -------------------------- | -------------------------------------------------- | ---------- |
+| `ETHEREUM_MAINNET_RPC_URL` | Ethereum RPC endpoint                              | Required   |
+| `CHAIN_ID`                 | Chain ID for RPC calls                             | `1`        |
+| `BLOCK_NUMBER`             | Block number for proofs                            | Latest     |
+| `EPOCH`                    | Override epoch timestamp                           | From block |
+| `PROTOCOL`                 | `curve`, `balancer`, `frax`, `fxn`, `pendle`, `yb` | `curve`    |
+
+#### Contract Parameters
+
+| Variable                  | Description                       | Default                         |
+| ------------------------- | --------------------------------- | ------------------------------- |
+| `GAUGE_CONTROLLER`        | GaugeController address           | Required                        |
+| `GAUGE`                   | Gauge address                     | Required                        |
+| `ACCOUNT`                 | User account address              | Required                        |
+| `WEIGHT_MAPPING_SLOT`     | Storage slot for points_weight    | Protocol default (if available) |
+| `LAST_VOTE_MAPPING_SLOT`  | Storage slot for last_user_vote   | Protocol default (if available) |
+| `USER_SLOPE_MAPPING_SLOT` | Storage slot for vote_user_slopes | Protocol default (if available) |
+
+**Note**: Storage slot variables are optional for known protocols (`curve`, `balancer`, `frax`, `fxn`, `pendle`, `yb`). The system uses built-in defaults for these protocols.
+
+#### Prover Network
+
+| Variable              | Description                             | Default                    |
+| --------------------- | --------------------------------------- | -------------------------- |
+| `NETWORK_PRIVATE_KEY` | Private key for Succinct Prover Network | Required for PLONK/Groth16 |
+
+### Succinct Prover Network
+
+For PLONK and Groth16 proofs, the system uses the [Succinct Prover Network](https://docs.succinct.xyz/docs/sp1/prover-network/quickstart). This is required because these proof types need GPU acceleration.
+
+**Setup:**
+
+1. **Generate a requester key**: Create an Ethereum-compatible private key (secp256k1)
+2. **Fund your account**: Acquire PROVE tokens and deposit them at https://network.succinct.xyz/
+3. **Set the environment variable**: `export NETWORK_PRIVATE_KEY=0x...`
+
+```bash
+# Generate PLONK proof using the network
+NETWORK_PRIVATE_KEY=0x... just prove
+
+# Generate compressed proof locally (no network needed)
+just prove-compressed
+```
+
+Core and compressed proofs can be generated locally without the network.
 
 ### Input JSON Format
 

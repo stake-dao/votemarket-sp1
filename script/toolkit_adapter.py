@@ -95,7 +95,8 @@ def main() -> int:
         )
 
     user_proofs = []
-    unique_users = {(account.lower(), gauge.lower()): (account, gauge) for account, gauge in users_for_account}
+    unique_users = {(account.lower(), gauge.lower()): (account, gauge)
+                    for account, gauge in users_for_account}
     for account, gauge in unique_users.values():
         result = toolkit.get_user_proof(
             protocol=protocol,

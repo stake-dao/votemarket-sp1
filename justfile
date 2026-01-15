@@ -48,7 +48,8 @@ mock-debug:
 # ============================================================================
 # PROVE MODE (Real Proof Generation)
 # ============================================================================
-# Note: PLONK and Groth16 proofs require NETWORK_PRIVATE_KEY for the Succinct Prover Network.
+# Note: PLONK and Groth16 proofs require the Succinct Prover Network.
+# Set NETWORK_PRIVATE_KEY to your requester account's private key.
 # Get PROVE tokens at https://network.succinct.xyz/
 
 # Generate a PLONK proof (recommended for production, on-chain verifiable)
@@ -67,6 +68,8 @@ prove-groth16:
     cd script && RUN_MODE=prove PROOF_KIND=groth16 VERIFY_PROOF=true RUST_LOG=info cargo run --release
 
 # Generate a compressed STARK proof (not on-chain verifiable, for testing)
+# Can be generated locally without the network - works with any Rust version
+# Recommended if you don't have Rust 1.88+ for network proving
 prove-compressed:
     cd script && RUN_MODE=prove PROOF_KIND=compressed VERIFY_PROOF=true RUST_LOG=info cargo run --release
 
@@ -79,7 +82,8 @@ prove-core:
 # ============================================================================
 
 # Run in prove mode with RPC source
-# Requires: NETWORK_PRIVATE_KEY, ETHEREUM_MAINNET_RPC_URL, BLOCK_NUMBER, GAUGE_CONTROLLER, GAUGE, ACCOUNT, and slot env vars
+# Requires: NETWORK_PRIVATE_KEY, ETHEREUM_MAINNET_RPC_URL, GAUGE_CONTROLLER, GAUGE, ACCOUNT
+# Optional: BLOCK_NUMBER (default: latest), EPOCH (default: from block), slot env vars (default: protocol defaults)
 prove-rpc:
     cd script && PROOF_SOURCE=rpc RUN_MODE=prove PROOF_KIND=plonk VERIFY_PROOF=true RUST_LOG=info cargo run --release
 
@@ -105,7 +109,7 @@ mock-toolkit:
 # ============================================================================
 
 # Run in prove mode with JSON input file
-# Requires: NETWORK_PRIVATE_KEY
+# Requires: NETWORK_PRIVATE_KEY for PLONK/Groth16 proofs
 # Usage: just prove-json ./path/to/input.json
 prove-json input_file:
     cd script && INPUT_JSON={{input_file}} RUN_MODE=prove PROOF_KIND=plonk VERIFY_PROOF=true RUST_LOG=info cargo run --release
@@ -193,11 +197,11 @@ env-help:
     @echo "                        Get PROVE tokens at https://network.succinct.xyz/"
     @echo ""
     @echo "Data Source:"
-    @echo "  PROOF_SOURCE     - rpc | toolkit (default: rpc)"
-    @echo "  INPUT_JSON       - Path to JSON input file"
+    @echo "  PROOF_SOURCE     - rpc | toolkit (default: toolkit)"
+    @echo "  INPUT_JSON       - Path to JSON input file (overrides env vars)"
     @echo ""
     @echo "RPC Endpoints:"
-    @echo "  ETHEREUM_MAINNET_RPC_URL  - Ethereum mainnet RPC"
+    @echo "  ETHEREUM_MAINNET_RPC_URL  - Ethereum mainnet RPC (required)"
     @echo "  OPTIMISM_MAINNET_RPC_URL  - Optimism RPC"
     @echo "  ARBITRUM_MAINNET_RPC_URL  - Arbitrum RPC"
     @echo "  BASE_MAINNET_RPC_URL      - Base RPC"
@@ -206,17 +210,18 @@ env-help:
     @echo ""
     @echo "Contract Parameters:"
     @echo "  CHAIN_ID                  - Chain ID (default: 1)"
-    @echo "  BLOCK_NUMBER              - Block number (hex or decimal)"
-    @echo "  EPOCH                     - Override epoch timestamp"
-    @echo "  PROTOCOL                  - curve | yb | pendle (default: curve)"
-    @echo "  GAUGE_CONTROLLER          - GaugeController address"
-    @echo "  GAUGE                     - Gauge address"
-    @echo "  ACCOUNT                   - User account address"
+    @echo "  BLOCK_NUMBER              - Block number, hex or decimal (default: latest)"
+    @echo "  EPOCH                     - Override epoch timestamp (default: from block)"
+    @echo "  PROTOCOL                  - curve | balancer | frax | fxn | pendle | yb (default: curve)"
+    @echo "  GAUGE_CONTROLLER          - GaugeController address (required)"
+    @echo "  GAUGE                     - Gauge address (required)"
+    @echo "  ACCOUNT                   - User account address (required)"
     @echo ""
-    @echo "Storage Slots:"
+    @echo "Storage Slots (optional for known protocols):"
     @echo "  WEIGHT_MAPPING_SLOT       - points_weight mapping slot"
     @echo "  LAST_VOTE_MAPPING_SLOT    - last_user_vote mapping slot"
     @echo "  USER_SLOPE_MAPPING_SLOT   - vote_user_slopes mapping slot"
+    @echo "  Note: These are auto-detected for curve, balancer, frax, fxn, pendle, yb"
     @echo ""
     @echo "Output:"
     @echo "  PROOF_OUTPUT     - Output proof binary filename (default: proof.bin)"

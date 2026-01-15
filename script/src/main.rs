@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha3::{Digest, Keccak256};
 use shared::{AccountRequest, AccountResult, Input, Output, PointRequest, PointResult};
-use sp1_sdk::{HashableKey, ProverClient, SP1Stdin};
+use sp1_sdk::{HashableKey, NetworkSigner, ProverClient, SP1Stdin};
 use std::{
     collections::HashMap,
     env,
@@ -116,12 +116,12 @@ enum ProofSource {
 impl ProofSource {
     fn from_env() -> Self {
         match env::var("PROOF_SOURCE")
-            .unwrap_or_else(|_| "rpc".to_string())
+            .unwrap_or_else(|_| "toolkit".to_string())
             .to_lowercase()
             .as_str()
         {
-            "toolkit" => Self::Toolkit,
-            _ => Self::Rpc,
+            "rpc" => Self::Rpc,
+            _ => Self::Toolkit,
         }
     }
 }
@@ -234,7 +234,7 @@ struct HostRequest {
 #[derive(Debug)]
 struct HostInput {
     chain_id: u64,
-    block_number: u64,
+    block_number: Option<u64>,
     epoch_override: Option<u64>,
     protocol: Protocol,
     protocol_name: String,
@@ -246,7 +246,7 @@ struct HostInput {
 impl HostInput {
     fn from_env() -> Result<Self, String> {
         let chain_id = parse_optional_u64_env("CHAIN_ID").unwrap_or(1);
-        let block_number = parse_u64_env("BLOCK_NUMBER")?;
+        let block_number = parse_optional_u64_env("BLOCK_NUMBER");
         let protocol_name = env::var("PROTOCOL")
             .unwrap_or_else(|_| "curve".to_string())
             .to_lowercase();
@@ -254,10 +254,32 @@ impl HostInput {
         let gauge_controller = parse_address_env("GAUGE_CONTROLLER")?;
         let gauge = parse_address_env("GAUGE")?;
         let account = parse_address_env("ACCOUNT")?;
-        let weight_mapping_slot = parse_u256_env("WEIGHT_MAPPING_SLOT")?;
-        let last_vote_mapping_slot = parse_u256_env("LAST_VOTE_MAPPING_SLOT")?;
-        let user_slope_mapping_slot = parse_u256_env("USER_SLOPE_MAPPING_SLOT")?;
         let epoch_override = parse_optional_u64_env("EPOCH");
+
+        // Slots are optional - they can come from env vars or from toolkit defaults
+        let weight_mapping_slot = parse_optional_u256_env("WEIGHT_MAPPING_SLOT");
+        let last_vote_mapping_slot = parse_optional_u256_env("LAST_VOTE_MAPPING_SLOT");
+        let user_slope_mapping_slot = parse_optional_u256_env("USER_SLOPE_MAPPING_SLOT");
+
+        // Use env slots if all are provided, otherwise use toolkit defaults for the protocol
+        let slots = match (weight_mapping_slot, last_vote_mapping_slot, user_slope_mapping_slot) {
+            (Some(w), Some(l), Some(u)) => SlotConfig {
+                weight_mapping_slot: w,
+                last_vote_mapping_slot: l,
+                user_slope_mapping_slot: u,
+            },
+            _ => {
+                // Try to use toolkit defaults
+                protocol.toolkit_slots().ok_or_else(|| {
+                    format!(
+                        "Missing slot env vars and no toolkit defaults for protocol '{}'. \
+                         Set WEIGHT_MAPPING_SLOT, LAST_VOTE_MAPPING_SLOT, USER_SLOPE_MAPPING_SLOT \
+                         or use a protocol with toolkit defaults (curve, balancer, frax, fxn, pendle, yb)",
+                        protocol_name
+                    )
+                })?
+            }
+        };
 
         Ok(Self {
             chain_id,
@@ -266,11 +288,7 @@ impl HostInput {
             protocol,
             protocol_name,
             gauge_controller,
-            slots: SlotConfig {
-                weight_mapping_slot,
-                last_vote_mapping_slot,
-                user_slope_mapping_slot,
-            },
+            slots,
             requests: vec![
                 RequestItem {
                     kind: RequestKind::AccountData,
@@ -293,7 +311,7 @@ impl HostInput {
             .to_lowercase();
         Self {
             chain_id: request.chain_id,
-            block_number: request.block_number,
+            block_number: Some(request.block_number),
             epoch_override: request.epoch,
             protocol: Protocol::from_str(&protocol_name),
             protocol_name,
@@ -497,6 +515,14 @@ async fn rpc_call<T: for<'de> Deserialize<'de>>(
     rpc_response
         .result
         .ok_or_else(|| "RPC response missing result".to_string())
+}
+
+async fn fetch_latest_block_number(
+    client: &reqwest::Client,
+    rpc_url: &str,
+) -> Result<u64, String> {
+    let response: String = rpc_call(client, rpc_url, "eth_blockNumber", json!([])).await?;
+    parse_u64(&response)
 }
 
 async fn fetch_block_state_root(
@@ -789,6 +815,10 @@ fn parse_address_env(name: &str) -> Result<Address, String> {
 fn parse_u256_env(name: &str) -> Result<U256, String> {
     let value = require_env(name)?;
     parse_u256(&value).map_err(|err| format!("invalid {name}: {err}"))
+}
+
+fn parse_optional_u256_env(name: &str) -> Option<U256> {
+    env::var(name).ok().and_then(|value| parse_u256(&value).ok())
 }
 
 fn parse_u256(value: &str) -> Result<U256, String> {
@@ -1279,7 +1309,8 @@ async fn main() {
 
     // Quick mode: just print the VKEY and exit (no proof generation needed)
     if parse_optional_bool_env("VKEY_ONLY").unwrap_or(false) {
-        let client = ProverClient::new();
+        env::set_var("SP1_PROVER", "cpu");
+        let client = ProverClient::from_env();
         let elf = load_elf();
         let (_, vk) = client.setup(elf.as_slice());
         println!("Program VKEY: {}", vk.bytes32());
@@ -1294,6 +1325,20 @@ async fn main() {
     let mut host_input = HostInput::load().expect("Invalid host input");
     let (rpc_url, rpc_env_name) =
         resolve_rpc_url(host_input.chain_id).expect("Missing RPC_URL or chain RPC env");
+
+    let http_client = reqwest::Client::new();
+
+    // Resolve block number - fetch latest if not specified
+    let block_number = match host_input.block_number {
+        Some(bn) => bn,
+        None => {
+            println!("BLOCK_NUMBER not set, fetching latest block...");
+            fetch_latest_block_number(&http_client, &rpc_url)
+                .await
+                .expect("Failed to fetch latest block number")
+        }
+    };
+    println!("Using block number: {}", block_number);
 
     // When using toolkit, use the toolkit's hardcoded slots instead of env/input slots.
     // This ensures the slots match what the toolkit used when generating proofs.
@@ -1315,14 +1360,37 @@ async fn main() {
         }
     }
 
-    let client = ProverClient::new();
+    // Create ProverClient - use network mode for PLONK/Groth16 proofs
+    let use_network = matches!(
+        (&run_mode, &proof_kind),
+        (RunMode::Prove, ProofKind::Plonk | ProofKind::Groth16)
+    );
+
+    if use_network {
+        println!("Using Succinct Prover Network for {} proof...", proof_kind.as_str());
+        // Set environment variables for network prover
+        env::set_var("SP1_PROVER", "network");
+
+        // Debug: Print the address being used for network authentication
+        if let Ok(pk) = env::var("NETWORK_PRIVATE_KEY") {
+            match NetworkSigner::local(&pk) {
+                Ok(signer) => println!("Network requester address: {:?}", signer.address()),
+                Err(e) => eprintln!("Warning: Could not parse NETWORK_PRIVATE_KEY: {}", e),
+            }
+        } else {
+            eprintln!("Warning: NETWORK_PRIVATE_KEY not set");
+        }
+    } else {
+        env::set_var("SP1_PROVER", "cpu");
+    }
+
+    // Use from_env() which reads SP1_PROVER and NETWORK_PRIVATE_KEY
+    let client = ProverClient::from_env();
     let mut stdin = SP1Stdin::new();
     let elf = load_elf();
 
-    let http_client = reqwest::Client::new();
-
     let (state_root, timestamp) =
-        fetch_block_state_root(&http_client, &rpc_url, host_input.block_number)
+        fetch_block_state_root(&http_client, &rpc_url, block_number)
             .await
             .expect("Failed to fetch block state root");
 
@@ -1346,7 +1414,7 @@ async fn main() {
                 &http_client,
                 &rpc_url,
                 host_input.gauge_controller,
-                host_input.block_number,
+                block_number,
                 &all_slots,
             )
             .await
@@ -1381,7 +1449,7 @@ async fn main() {
     stdin.write(&input);
 
     println!("Input prepared:");
-    println!("  Block: {}", host_input.block_number);
+    println!("  Block: {}", block_number);
     println!("  Epoch: {}", epoch);
     println!("  State root: {:?}", input.state_root);
     println!("  Point requests: {}", input.point_requests.len());
@@ -1397,7 +1465,7 @@ async fn main() {
         RunMode::Execute => {
             println!("Executing in mock mode...");
             let (public_values, report) = client
-                .execute(elf.as_slice(), stdin)
+                .execute(elf.as_slice(), &stdin)
                 .run()
                 .expect("Execution failed");
             println!("Execution successful!");
@@ -1429,10 +1497,10 @@ async fn main() {
             println!("Program VKEY: {}", vk.bytes32());
 
             let proof = match proof_kind {
-                ProofKind::Core => client.prove(&pk, stdin).run(),
-                ProofKind::Compressed => client.prove(&pk, stdin).compressed().run(),
-                ProofKind::Plonk => client.prove(&pk, stdin).plonk().run(),
-                ProofKind::Groth16 => client.prove(&pk, stdin).groth16().run(),
+                ProofKind::Core => client.prove(&pk, &stdin).run(),
+                ProofKind::Compressed => client.prove(&pk, &stdin).compressed().run(),
+                ProofKind::Plonk => client.prove(&pk, &stdin).plonk().run(),
+                ProofKind::Groth16 => client.prove(&pk, &stdin).groth16().run(),
             }
             .expect("Proof generation failed");
 

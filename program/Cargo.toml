@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-sp1-zkvm = "3.0.0"
+sp1-zkvm = "5.2"
 alloy-primitives = { version = "0.8.14", default-features = false }
 alloy-rlp = { version = "0.3.9", features = ["derive"] }
 alloy-trie = "0.7.0"
