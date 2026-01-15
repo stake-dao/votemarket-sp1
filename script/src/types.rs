@@ -42,7 +42,8 @@ pub struct HostRequest {
     pub protocol: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_address")]
     pub gauge_controller: Option<Address>,
-    pub slots: SlotConfig,
+    #[serde(default)]
+    pub slots: Option<SlotConfig>,
     pub requests: Vec<RequestItem>,
 }
 
@@ -151,6 +152,18 @@ impl HostInput {
                 )
             })?;
 
+        // Slots come from request if provided, otherwise from protocol defaults
+        let slots = request
+            .slots
+            .or_else(|| protocol.toolkit_slots())
+            .ok_or_else(|| {
+                format!(
+                    "No slots for protocol '{}'. \
+                     Provide slots in JSON or use a known protocol (curve, balancer, frax, fxn, pendle, yb)",
+                    protocol_name
+                )
+            })?;
+
         Ok(Self {
             chain_id: request.chain_id,
             block_number: Some(request.block_number),
@@ -158,7 +171,7 @@ impl HostInput {
             protocol,
             protocol_name,
             gauge_controller,
-            slots: request.slots,
+            slots,
             requests: request.requests,
         })
     }
