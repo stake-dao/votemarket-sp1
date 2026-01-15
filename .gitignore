@@ -4,3 +4,4 @@
 .env
 script/output
 .claude/
+.venv/
