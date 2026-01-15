@@ -113,9 +113,12 @@ async fn main() {
             let latest = fetch_latest_block_number(&http_client, &rpc_url)
                 .await
                 .expect("Failed to fetch latest block number");
+            println!("Latest block: {}, using: {}", latest, latest.saturating_sub(BLOCK_SAFETY_MARGIN));
             latest.saturating_sub(BLOCK_SAFETY_MARGIN)
         }
     };
+    // Update host_input with resolved block number so toolkit gets the correct value
+    host_input.block_number = Some(block_number);
     println!("Using block number: {}", block_number);
 
     // When using toolkit, use the toolkit's hardcoded slots instead of env/input slots.
