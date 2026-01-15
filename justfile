@@ -48,16 +48,21 @@ mock-debug:
 # ============================================================================
 # PROVE MODE (Real Proof Generation)
 # ============================================================================
+# Note: PLONK and Groth16 proofs require NETWORK_PRIVATE_KEY for the Succinct Prover Network.
+# Get PROVE tokens at https://network.succinct.xyz/
 
 # Generate a PLONK proof (recommended for production, on-chain verifiable)
+# Requires: NETWORK_PRIVATE_KEY
 prove:
     cd script && RUN_MODE=prove PROOF_KIND=plonk VERIFY_PROOF=true RUST_LOG=info cargo run --release
 
 # Generate a PLONK proof without verification
+# Requires: NETWORK_PRIVATE_KEY
 prove-fast:
     cd script && RUN_MODE=prove PROOF_KIND=plonk VERIFY_PROOF=false RUST_LOG=info cargo run --release
 
 # Generate a Groth16 proof (alternative on-chain verifiable format)
+# Requires: NETWORK_PRIVATE_KEY
 prove-groth16:
     cd script && RUN_MODE=prove PROOF_KIND=groth16 VERIFY_PROOF=true RUST_LOG=info cargo run --release
 
@@ -74,7 +79,7 @@ prove-core:
 # ============================================================================
 
 # Run in prove mode with RPC source
-# Requires: ETHEREUM_MAINNET_RPC_URL, BLOCK_NUMBER, GAUGE_CONTROLLER, GAUGE, ACCOUNT, and slot env vars
+# Requires: NETWORK_PRIVATE_KEY, ETHEREUM_MAINNET_RPC_URL, BLOCK_NUMBER, GAUGE_CONTROLLER, GAUGE, ACCOUNT, and slot env vars
 prove-rpc:
     cd script && PROOF_SOURCE=rpc RUN_MODE=prove PROOF_KIND=plonk VERIFY_PROOF=true RUST_LOG=info cargo run --release
 
@@ -87,7 +92,7 @@ mock-rpc:
 # ============================================================================
 
 # Run in prove mode with toolkit source
-# Requires: ETHEREUM_MAINNET_RPC_URL and toolkit installed
+# Requires: NETWORK_PRIVATE_KEY, ETHEREUM_MAINNET_RPC_URL, and toolkit installed
 prove-toolkit:
     cd script && PROOF_SOURCE=toolkit RUN_MODE=prove PROOF_KIND=plonk VERIFY_PROOF=true RUST_LOG=info cargo run --release
 
@@ -100,6 +105,7 @@ mock-toolkit:
 # ============================================================================
 
 # Run in prove mode with JSON input file
+# Requires: NETWORK_PRIVATE_KEY
 # Usage: just prove-json ./path/to/input.json
 prove-json input_file:
     cd script && INPUT_JSON={{input_file}} RUN_MODE=prove PROOF_KIND=plonk VERIFY_PROOF=true RUST_LOG=info cargo run --release
@@ -178,9 +184,13 @@ env-help:
     @echo ""
     @echo "Run Mode:"
     @echo "  RUN_MODE         - mock | prove (default: mock)"
-    @echo "  PROOF_KIND       - core | compressed | plonk | groth16 (default: core)"
+    @echo "  PROOF_KIND       - core | compressed | plonk | groth16 (default: plonk)"
     @echo "  VERIFY_PROOF     - true | false (default: false)"
     @echo "  VKEY_ONLY        - true | false (default: false)"
+    @echo ""
+    @echo "Prover Network (required for plonk/groth16):"
+    @echo "  NETWORK_PRIVATE_KEY - Ethereum private key for Succinct Prover Network"
+    @echo "                        Get PROVE tokens at https://network.succinct.xyz/"
     @echo ""
     @echo "Data Source:"
     @echo "  PROOF_SOURCE     - rpc | toolkit (default: rpc)"
