@@ -191,14 +191,14 @@ After running in proof mode, artifacts are saved to `output/`:
 
 | Variable                  | Description                       | Default                         |
 | ------------------------- | --------------------------------- | ------------------------------- |
-| `GAUGE_CONTROLLER`        | GaugeController address           | Required                        |
 | `GAUGE`                   | Gauge address                     | Required                        |
 | `ACCOUNT`                 | User account address              | Required                        |
+| `GAUGE_CONTROLLER`        | GaugeController address           | Protocol default (if available) |
 | `WEIGHT_MAPPING_SLOT`     | Storage slot for points_weight    | Protocol default (if available) |
 | `LAST_VOTE_MAPPING_SLOT`  | Storage slot for last_user_vote   | Protocol default (if available) |
 | `USER_SLOPE_MAPPING_SLOT` | Storage slot for vote_user_slopes | Protocol default (if available) |
 
-**Note**: Storage slot variables are optional for known protocols (`curve`, `balancer`, `frax`, `fxn`, `pendle`, `yb`). The system uses built-in defaults for these protocols.
+**Note**: `GAUGE_CONTROLLER` and storage slot variables are optional for known protocols (`curve`, `balancer`, `frax`, `fxn`, `pendle`, `yb`). The system uses built-in defaults for these protocols.
 
 #### Prover Network
 
@@ -228,13 +228,14 @@ Core and compressed proofs can be generated locally without the network.
 
 ### Input JSON Format
 
+For known protocols, `gauge_controller` is optional (auto-detected from `protocol`).
+
 ```json
 {
   "chain_id": 1,
   "block_number": 23438749,
   "epoch": 1758758400,
   "protocol": "curve",
-  "gauge_controller": "0x2F50D538606Fa9EDD2B11E2446BEb18C9D5846bB",
   "slots": {
     "weight_mapping_slot": "0x...",
     "last_vote_mapping_slot": "0x...",

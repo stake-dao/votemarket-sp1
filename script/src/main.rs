@@ -1,9 +1,9 @@
-use alloy_primitives::{hex, Address, B256, U256};
+use alloy_primitives::{address, hex, Address, B256, U256};
 use rlp::Rlp;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha3::{Digest, Keccak256};
-use shared::{AccountRequest, AccountResult, Input, Output, PointRequest, PointResult};
+use shared::{AccountRequest, Input, Output, PointRequest};
 use sp1_sdk::{HashableKey, NetworkSigner, ProverClient, SP1Stdin};
 use std::{
     collections::HashMap,
@@ -188,6 +188,20 @@ impl Protocol {
             Protocol::Default => None,
         }
     }
+
+    /// Get the gauge controller address for this protocol.
+    /// These MUST match the values in votemarket_toolkit/shared/constants.py
+    fn gauge_controller(&self) -> Option<Address> {
+        match self {
+            Protocol::Curve => Some(address!("2F50D538606Fa9EDD2B11E2446BEb18C9D5846bB")),
+            Protocol::Balancer => Some(address!("C128468b7Ce63eA702C1f104D55A2566b13D3ABD")),
+            Protocol::Frax => Some(address!("3669C421b77340B2979d1A00a792CC2ee0FcE737")),
+            Protocol::Fxn => Some(address!("e60eB8098B34eD775ac44B1ddE864e098C6d7f37")),
+            Protocol::Pendle => Some(address!("44087E105137a5095c008AaB6a6530182821F2F0")),
+            Protocol::Yb => Some(address!("1Be14811A3a06F6aF4fA64310a636e1Df04c1c21")),
+            Protocol::Default => None,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]
@@ -225,8 +239,8 @@ struct HostRequest {
     epoch: Option<u64>,
     #[serde(default)]
     protocol: Option<String>,
-    #[serde(deserialize_with = "deserialize_address")]
-    gauge_controller: Address,
+    #[serde(default, deserialize_with = "deserialize_optional_address")]
+    gauge_controller: Option<Address>,
     slots: SlotConfig,
     requests: Vec<RequestItem>,
 }
@@ -251,10 +265,20 @@ impl HostInput {
             .unwrap_or_else(|_| "curve".to_string())
             .to_lowercase();
         let protocol = Protocol::from_str(&protocol_name);
-        let gauge_controller = parse_address_env("GAUGE_CONTROLLER")?;
         let gauge = parse_address_env("GAUGE")?;
         let account = parse_address_env("ACCOUNT")?;
         let epoch_override = parse_optional_u64_env("EPOCH");
+
+        // Gauge controller comes from protocol defaults, with optional env override
+        let gauge_controller = parse_optional_address_env("GAUGE_CONTROLLER")
+            .or_else(|| protocol.gauge_controller())
+            .ok_or_else(|| {
+                format!(
+                    "No gauge controller for protocol '{}'. \
+                     Set GAUGE_CONTROLLER env var or use a known protocol (curve, balancer, frax, fxn, pendle, yb)",
+                    protocol_name
+                )
+            })?;
 
         // Slots are optional - they can come from env vars or from toolkit defaults
         let weight_mapping_slot = parse_optional_u256_env("WEIGHT_MAPPING_SLOT");
@@ -304,21 +328,35 @@ impl HostInput {
         })
     }
 
-    fn from_request(request: HostRequest) -> Self {
+    fn from_request(request: HostRequest) -> Result<Self, String> {
         let protocol_name = request
             .protocol
             .unwrap_or_else(|| "curve".to_string())
             .to_lowercase();
-        Self {
+        let protocol = Protocol::from_str(&protocol_name);
+
+        // Gauge controller comes from request if provided, otherwise from protocol defaults
+        let gauge_controller = request
+            .gauge_controller
+            .or_else(|| protocol.gauge_controller())
+            .ok_or_else(|| {
+                format!(
+                    "No gauge controller for protocol '{}'. \
+                     Provide gauge_controller in JSON or use a known protocol (curve, balancer, frax, fxn, pendle, yb)",
+                    protocol_name
+                )
+            })?;
+
+        Ok(Self {
             chain_id: request.chain_id,
             block_number: Some(request.block_number),
             epoch_override: request.epoch,
-            protocol: Protocol::from_str(&protocol_name),
+            protocol,
             protocol_name,
-            gauge_controller: request.gauge_controller,
+            gauge_controller,
             slots: request.slots,
             requests: request.requests,
-        }
+        })
     }
 
     fn load() -> Result<Self, String> {
@@ -327,7 +365,7 @@ impl HostInput {
                 .map_err(|err| format!("failed to read INPUT_JSON {}: {err}", path))?;
             let request: HostRequest =
                 serde_json::from_str(&contents).map_err(|err| format!("invalid INPUT_JSON: {err}"))?;
-            Ok(Self::from_request(request))
+            Self::from_request(request)
         } else {
             Self::from_env()
         }
@@ -418,11 +456,11 @@ struct ToolkitUserProof {
 #[derive(Debug, Deserialize)]
 struct ToolkitProofBundle {
     #[serde(default)]
-    protocol: Option<String>,
+    _protocol: Option<String>,
     #[serde(default)]
-    block_number: Option<u64>,
+    _block_number: Option<u64>,
     #[serde(default)]
-    epoch: Option<u64>,
+    _epoch: Option<u64>,
     #[serde(default)]
     gauge_proofs: Vec<ToolkitGaugeProof>,
     #[serde(default)]
@@ -802,19 +840,15 @@ fn parse_optional_u64_env(name: &str) -> Option<u64> {
     env::var(name).ok().and_then(|value| parse_u64(&value).ok())
 }
 
-fn parse_u64_env(name: &str) -> Result<u64, String> {
-    let value = require_env(name)?;
-    parse_u64(&value)
-}
-
 fn parse_address_env(name: &str) -> Result<Address, String> {
     let value = require_env(name)?;
     Address::from_str(&value).map_err(|err| format!("invalid {name}: {err}"))
 }
 
-fn parse_u256_env(name: &str) -> Result<U256, String> {
-    let value = require_env(name)?;
-    parse_u256(&value).map_err(|err| format!("invalid {name}: {err}"))
+fn parse_optional_address_env(name: &str) -> Option<Address> {
+    env::var(name)
+        .ok()
+        .and_then(|value| Address::from_str(&value).ok())
 }
 
 fn parse_optional_u256_env(name: &str) -> Option<U256> {

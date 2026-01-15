@@ -82,8 +82,8 @@ prove-core:
 # ============================================================================
 
 # Run in prove mode with RPC source
-# Requires: NETWORK_PRIVATE_KEY, ETHEREUM_MAINNET_RPC_URL, GAUGE_CONTROLLER, GAUGE, ACCOUNT
-# Optional: BLOCK_NUMBER (default: latest), EPOCH (default: from block), slot env vars (default: protocol defaults)
+# Requires: NETWORK_PRIVATE_KEY, ETHEREUM_MAINNET_RPC_URL, GAUGE, ACCOUNT
+# Optional: BLOCK_NUMBER (default: latest), EPOCH (default: from block), GAUGE_CONTROLLER (default: protocol), slot env vars (default: protocol defaults)
 prove-rpc:
     cd script && PROOF_SOURCE=rpc RUN_MODE=prove PROOF_KIND=plonk VERIFY_PROOF=true RUST_LOG=info cargo run --release
 
@@ -213,11 +213,11 @@ env-help:
     @echo "  BLOCK_NUMBER              - Block number, hex or decimal (default: latest)"
     @echo "  EPOCH                     - Override epoch timestamp (default: from block)"
     @echo "  PROTOCOL                  - curve | balancer | frax | fxn | pendle | yb (default: curve)"
-    @echo "  GAUGE_CONTROLLER          - GaugeController address (required)"
     @echo "  GAUGE                     - Gauge address (required)"
     @echo "  ACCOUNT                   - User account address (required)"
     @echo ""
-    @echo "Storage Slots (optional for known protocols):"
+    @echo "Protocol Defaults (optional for known protocols):"
+    @echo "  GAUGE_CONTROLLER          - GaugeController address (auto-detected for known protocols)"
     @echo "  WEIGHT_MAPPING_SLOT       - points_weight mapping slot"
     @echo "  LAST_VOTE_MAPPING_SLOT    - last_user_vote mapping slot"
     @echo "  USER_SLOPE_MAPPING_SLOT   - vote_user_slopes mapping slot"
