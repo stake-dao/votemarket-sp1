@@ -7,6 +7,7 @@ This document provides in-depth technical details about the Votemarket SP1 ZK ve
 - [Introduction to Zero-Knowledge Proofs](#introduction-to-zero-knowledge-proofs)
 - [Problem Statement](#problem-statement)
 - [Solution: ZK Compression](#solution-zk-compression)
+  - [Detailed Calldata Comparison](#detailed-calldata-comparison)
 - [Architecture](#architecture)
   - [System Components](#system-components)
   - [Data Flow](#data-flow)
@@ -113,6 +114,139 @@ The current Votemarket implementation uses **on-chain MPT verification**:
 | User experience       | Multiple txs | Single tx       | **Much better**  |
 
 \*Practically limited by public values encoding, but can handle 500+ claims easily.
+
+### Detailed Calldata Comparison
+
+This section provides a comprehensive breakdown of calldata costs for both approaches.
+
+#### MPT Approach (Current Implementation)
+
+For **each user claim**, the current `Verifier.sol` requires:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        MPT CALLDATA BREAKDOWN                               │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   setPointData(gauge, epoch, proof)      ← Once per gauge per epoch         │
+│   ├── Function selector: 4 bytes                                            │
+│   ├── gauge address: 32 bytes                                               │
+│   ├── epoch: 32 bytes                                                       │
+│   └── proof (RLP-encoded MPT path):                                         │
+│       └── ~1-3 KB (7-8 trie levels, each node up to 532 bytes)              │
+│                                                                             │
+│   setAccountData(account, gauge, epoch, proof)  ← Once per user per gauge   │
+│   ├── Function selector: 4 bytes                                            │
+│   ├── account address: 32 bytes                                             │
+│   ├── gauge address: 32 bytes                                               │
+│   ├── epoch: 32 bytes                                                       │
+│   └── proof (3 storage proofs combined):                                    │
+│       ├── lastVote proof: ~1-3 KB                                           │
+│       ├── slope proof: ~1-3 KB                                              │
+│       └── end proof: ~1-3 KB                                                │
+│                                                                             │
+│   TOTAL PER USER: ~6-13 KB calldata                                         │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Why MPT proofs are large:**
+
+- Ethereum's MPT has ~7-8 levels on average
+- Each branch node contains up to 17 elements (16 branches + value)
+- Proofs must include all nodes along the path from root to leaf
+- Storage proofs require both account proof + storage slot proof
+
+#### ZK Approach (New Implementation)
+
+The ZK approach uses `ZKVerifier.verifyAndInsert(proofBytes, publicValues)`:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         ZK CALLDATA BREAKDOWN                               │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   PROOF BYTES (constant size, regardless of batch size):                    │
+│   ├── Groth16:  ~256 bytes   (smallest, cheapest on-chain)                  │
+│   └── PLONK:    ~800 bytes   (universal setup, no trusted ceremony)         │
+│                                                                             │
+│   PUBLIC VALUES (scales linearly with users):                               │
+│   ├── Header:                                                               │
+│   │   ├── stateRoot: 32 bytes                                               │
+│   │   └── epoch: 32 bytes                                                   │
+│   │                                                                         │
+│   ├── PointResult (per gauge):                                              │
+│   │   ├── gauge: 32 bytes (address padded)                                  │
+│   │   ├── epoch: 32 bytes                                                   │
+│   │   └── bias: 32 bytes                                                    │
+│   │   └── Subtotal: ~96 bytes per gauge                                     │
+│   │                                                                         │
+│   └── AccountResult (per user):                                             │
+│       ├── account: 32 bytes (address padded)                                │
+│       ├── gauge: 32 bytes (address padded)                                  │
+│       ├── epoch: 32 bytes                                                   │
+│       ├── slope: 32 bytes                                                   │
+│       ├── end: 32 bytes                                                     │
+│       └── lastVote: 32 bytes                                                │
+│       └── Subtotal: ~192 bytes per user                                     │
+│                                                                             │
+│   FORMULA:                                                                  │
+│   Total = proof_size + 64 + (96 × gauges) + (192 × users)                   │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Scaling Comparison
+
+**Calldata Size by Batch Size:**
+
+| Users | Gauges | MPT Calldata | ZK (Groth16) | ZK (PLONK) | Improvement |
+| ----- | ------ | ------------ | ------------ | ---------- | ----------- |
+| 1     | 1      | ~10 KB       | ~0.5 KB      | ~1.0 KB    | **10-20x**  |
+| 10    | 5      | ~100 KB      | ~2.7 KB      | ~3.3 KB    | **30-37x**  |
+| 50    | 10     | ~500 KB ❌   | ~11 KB       | ~11.5 KB   | **43-45x**  |
+| 100   | 20     | ~1 MB ❌     | ~22 KB       | ~22.5 KB   | **45-46x**  |
+| 200   | 30     | ~2 MB ❌     | ~44 KB       | ~44.5 KB   | **45x**     |
+
+❌ = Exceeds transaction size limit (~128 KB)
+
+**Key Insight**: The ZK proof is constant-size (~256-800 bytes), so adding more users only adds ~192 bytes per user instead of ~10 KB per user.
+
+```
+MPT scaling:    calldata ≈ N × 10 KB           (linear, steep slope)
+ZK scaling:     calldata ≈ 0.5 KB + N × 0.2 KB (linear, gentle slope)
+```
+
+#### Gas Cost Comparison
+
+| Operation            | MPT Gas      | ZK Gas (Groth16) | ZK Gas (PLONK) |
+| -------------------- | ------------ | ---------------- | -------------- |
+| Proof verification   | N/A (inline) | ~230k            | ~300k          |
+| Per-user data insert | ~50k         | ~50k             | ~50k           |
+| **1 user total**     | ~250k        | ~280k            | ~350k          |
+| **10 users total**   | ~2.5M        | ~730k            | ~800k          |
+| **50 users total**   | ~12.5M       | ~2.7M            | ~2.8M          |
+| **100 users total**  | ~25M         | ~5.2M            | ~5.3M          |
+
+> **Note**: For MPT, the **calldata limit (~128 KB) is the bottleneck**, not gas. 50 users would require ~500 KB calldata (exceeds limit), even though the gas (~12.5M) fits within a block.
+
+**Why ZK is more gas-efficient at scale:**
+
+- MPT verification is O(N) - each proof verified separately on-chain
+- ZK verification is O(1) - one proof covers all users
+- The constant verification cost (~230-300k) is amortized across all users
+
+#### Proof Type Comparison
+
+| Aspect           | Groth16                        | PLONK                   |
+| ---------------- | ------------------------------ | ----------------------- |
+| Proof size       | ~256 bytes                     | ~800 bytes              |
+| Verification gas | ~230k                          | ~300k                   |
+| Setup            | Trusted ceremony (per-circuit) | Universal (one-time)    |
+| Proving time     | Faster                         | Slightly slower         |
+| Best for         | Production (smallest proofs)   | Development/flexibility |
+
+Only **PLONK** is supported for the moment.
 
 ## Architecture
 
