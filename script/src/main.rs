@@ -103,13 +103,17 @@ async fn main() {
     let http_client = reqwest::Client::new();
 
     // Resolve block number - fetch latest if not specified
+    // When using "latest", we subtract a few blocks to avoid race conditions
+    // with load-balanced RPC nodes that may have slightly different chain tips
+    const BLOCK_SAFETY_MARGIN: u64 = 3;
     let block_number = match host_input.block_number {
         Some(bn) => bn,
         None => {
             println!("BLOCK_NUMBER not set, fetching latest block...");
-            fetch_latest_block_number(&http_client, &rpc_url)
+            let latest = fetch_latest_block_number(&http_client, &rpc_url)
                 .await
-                .expect("Failed to fetch latest block number")
+                .expect("Failed to fetch latest block number");
+            latest.saturating_sub(BLOCK_SAFETY_MARGIN)
         }
     };
     println!("Using block number: {}", block_number);
