@@ -14,7 +14,11 @@ pub fn persist_proof(
     proof: &sp1_sdk::SP1ProofWithPublicValues,
     output: Output,
 ) -> Result<(), String> {
-    let output_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("output");
+    let output_dir = if let Ok(custom_dir) = env::var("PROOF_OUTPUT_DIR") {
+        PathBuf::from(custom_dir)
+    } else {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("output")
+    };
     fs::create_dir_all(&output_dir).map_err(|err| format!("failed to create output dir: {err}"))?;
 
     let proof_path = env::var("PROOF_OUTPUT").unwrap_or_else(|_| "proof.bin".to_string());

@@ -169,13 +169,14 @@ After running in proof mode, artifacts are saved to `output/`:
 
 #### Core Settings
 
-| Variable       | Description                              | Default   |
-| -------------- | ---------------------------------------- | --------- |
-| `RUN_MODE`     | `mock` or `prove`                        | `mock`    |
-| `PROOF_KIND`   | `core`, `compressed`, `plonk`, `groth16` | `plonk`   |
-| `VERIFY_PROOF` | Verify proof locally after generation    | `false`   |
-| `PROOF_SOURCE` | `rpc` or `toolkit`                       | `toolkit` |
-| `INPUT_JSON`   | Path to input JSON file (overrides env)  | -         |
+| Variable           | Description                              | Default          |
+| ------------------ | ---------------------------------------- | ---------------- |
+| `RUN_MODE`         | `mock` or `prove`                        | `mock`           |
+| `PROOF_KIND`       | `core`, `compressed`, `plonk`, `groth16` | `plonk`          |
+| `VERIFY_PROOF`     | Verify proof locally after generation    | `false`          |
+| `PROOF_SOURCE`     | `rpc` or `toolkit`                       | `toolkit`        |
+| `INPUT_JSON`       | Path to input JSON file (overrides env)  | -                |
+| `PROOF_OUTPUT_DIR` | Directory for proof output files         | `script/output/` |
 
 #### Blockchain Settings
 
