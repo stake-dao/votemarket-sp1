@@ -71,7 +71,7 @@ just vkey
 Output:
 
 ```
-Program VKEY: 0x00dc92847478212b289df1a1eeddf1a795eac6cd936fc9bdc0ae434c59e75953
+Program VKEY: 0x00448714119471bb39b1dc6372b9e1b43c326a0867d2b14cbab9819bcea6d4ff
 ```
 
 **Note**: Any change to `program/src/main.rs`, its dependencies, or the Rust compiler version will produce a different VKEY on rebuild and will require redeploying the contract.
