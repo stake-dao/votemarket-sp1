@@ -89,7 +89,11 @@ impl HostInput {
         let user_slope_mapping_slot = parse_optional_u256_env("USER_SLOPE_MAPPING_SLOT");
 
         // Use env slots if all are provided, otherwise use toolkit defaults for the protocol
-        let slots = match (weight_mapping_slot, last_vote_mapping_slot, user_slope_mapping_slot) {
+        let slots = match (
+            weight_mapping_slot,
+            last_vote_mapping_slot,
+            user_slope_mapping_slot,
+        ) {
             (Some(w), Some(l), Some(u)) => SlotConfig {
                 weight_mapping_slot: w,
                 last_vote_mapping_slot: l,
@@ -177,8 +181,8 @@ impl HostInput {
         if let Ok(path) = env::var("INPUT_JSON") {
             let contents = fs::read_to_string(&path)
                 .map_err(|err| format!("failed to read INPUT_JSON {path}: {err}"))?;
-            let request: HostRequest =
-                serde_json::from_str(&contents).map_err(|err| format!("invalid INPUT_JSON: {err}"))?;
+            let request: HostRequest = serde_json::from_str(&contents)
+                .map_err(|err| format!("invalid INPUT_JSON: {err}"))?;
             Self::from_request(request)
         } else {
             Self::from_env()
@@ -287,10 +291,7 @@ mod tests {
 
     #[test]
     fn test_request_item_point_data() {
-        let json = format!(
-            r#"{{"type": "point_data", "gauge": "{}"}}"#,
-            TEST_GAUGE
-        );
+        let json = format!(r#"{{"type": "point_data", "gauge": "{TEST_GAUGE}"}}"#);
         let item: RequestItem = serde_json::from_str(&json).unwrap();
         assert!(matches!(item.kind, RequestKind::PointData));
         assert!(item.account.is_none());
@@ -300,8 +301,7 @@ mod tests {
     #[test]
     fn test_request_item_account_data() {
         let json = format!(
-            r#"{{"type": "account_data", "account": "{}", "gauge": "{}"}}"#,
-            TEST_ACCOUNT, TEST_GAUGE
+            r#"{{"type": "account_data", "account": "{TEST_ACCOUNT}", "gauge": "{TEST_GAUGE}"}}"#
         );
         let item: RequestItem = serde_json::from_str(&json).unwrap();
         assert!(matches!(item.kind, RequestKind::AccountData));
@@ -312,8 +312,7 @@ mod tests {
     #[test]
     fn test_request_item_null_account() {
         let json = format!(
-            r#"{{"type": "point_data", "account": null, "gauge": "{}"}}"#,
-            TEST_GAUGE
+            r#"{{"type": "point_data", "account": null, "gauge": "{TEST_GAUGE}"}}"#
         );
         let item: RequestItem = serde_json::from_str(&json).unwrap();
         assert!(item.account.is_none());
@@ -336,10 +335,9 @@ mod tests {
         let json = format!(
             r#"{{
                 "chain_id": 1,
-                "block_number": {},
+                "block_number": {TEST_BLOCK},
                 "requests": []
-            }}"#,
-            TEST_BLOCK
+            }}"#
         );
         let request: HostRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(request.chain_id, 1);
@@ -356,8 +354,8 @@ mod tests {
         let json = format!(
             r#"{{
                 "chain_id": 1,
-                "block_number": {},
-                "epoch": {},
+                "block_number": {TEST_BLOCK},
+                "epoch": {TEST_EPOCH},
                 "protocol": "curve",
                 "gauge_controller": "0x2F50D538606Fa9EDD2B11E2446BEb18C9D5846bB",
                 "slots": {{
@@ -366,11 +364,10 @@ mod tests {
                     "user_slope_mapping_slot": "9"
                 }},
                 "requests": [
-                    {{"type": "point_data", "gauge": "{}"}},
-                    {{"type": "account_data", "account": "{}", "gauge": "{}"}}
+                    {{"type": "point_data", "gauge": "{TEST_GAUGE}"}},
+                    {{"type": "account_data", "account": "{TEST_ACCOUNT}", "gauge": "{TEST_GAUGE}"}}
                 ]
-            }}"#,
-            TEST_BLOCK, TEST_EPOCH, TEST_GAUGE, TEST_ACCOUNT, TEST_GAUGE
+            }}"#
         );
         let request: HostRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(request.chain_id, 1);
@@ -493,13 +490,11 @@ mod tests {
             protocol: Some("curve".to_string()),
             gauge_controller: None,
             slots: None,
-            requests: vec![
-                RequestItem {
-                    kind: RequestKind::PointData,
-                    account: None,
-                    gauge: Some(address!("26f7786de3e6d9bd37fcf47be6f2bc455a21b74a")),
-                },
-            ],
+            requests: vec![RequestItem {
+                kind: RequestKind::PointData,
+                account: None,
+                gauge: Some(address!("26f7786de3e6d9bd37fcf47be6f2bc455a21b74a")),
+            }],
         };
         let input = HostInput::from_request(request).unwrap();
         let json = input.to_json_value(TEST_EPOCH);
@@ -541,13 +536,11 @@ mod tests {
             protocol: Some("curve".to_string()),
             gauge_controller: None,
             slots: None,
-            requests: vec![
-                RequestItem {
-                    kind: RequestKind::AccountData,
-                    account: Some(address!("fac2f11ba2577d5122dc1ec5301d35b16688251e")),
-                    gauge: Some(address!("26f7786de3e6d9bd37fcf47be6f2bc455a21b74a")),
-                },
-            ],
+            requests: vec![RequestItem {
+                kind: RequestKind::AccountData,
+                account: Some(address!("fac2f11ba2577d5122dc1ec5301d35b16688251e")),
+                gauge: Some(address!("26f7786de3e6d9bd37fcf47be6f2bc455a21b74a")),
+            }],
         };
         let input = HostInput::from_request(request).unwrap();
         let json = input.to_json_value(TEST_EPOCH);

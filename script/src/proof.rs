@@ -48,10 +48,8 @@ pub fn persist_proof(
 
     let public_values_raw = proof.public_values.raw();
     let public_values_hash = format!("0x{}", hex::encode(proof.public_values.hash()));
-    let public_values_hash_bn254 = format!(
-        "0x{}",
-        proof.public_values.hash_bn254().to_str_radix(16)
-    );
+    let public_values_hash_bn254 =
+        format!("0x{}", proof.public_values.hash_bn254().to_str_radix(16));
 
     let artifact = ProofArtifact {
         program_vkey,

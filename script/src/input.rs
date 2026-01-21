@@ -27,7 +27,12 @@ pub fn expand_requests(input: &HostInput, epoch: u64) -> Result<Vec<RequestSlots
 
         match request.kind {
             RequestKind::PointData => {
-                let slot = gauge_time_slot(input.protocol, gauge, epoch, input.slots.weight_mapping_slot);
+                let slot = gauge_time_slot(
+                    input.protocol,
+                    gauge,
+                    epoch,
+                    input.slots.weight_mapping_slot,
+                );
                 slots.push(SlotRequest {
                     label: "weight_bias".to_string(),
                     slot,

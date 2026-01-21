@@ -157,11 +157,11 @@ fmt-check:
 
 # Run clippy linter
 lint:
-    cargo clippy -- -D warnings
+    cargo clippy --workspace --all-targets -- -D warnings
 
 # Run clippy with fixes
 lint-fix:
-    cargo clippy --fix --allow-dirty
+    cargo clippy --workspace --all-targets --fix
 
 # ============================================================================
 # TOOLKIT SETUP

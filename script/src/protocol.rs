@@ -6,7 +6,9 @@
 use alloy_primitives::{address, Address, U256};
 use serde::{Deserialize, Serialize};
 
-use crate::helpers::{deserialize_u256, encode_address, encode_u256, encode_uint128, keccak_abi_encode};
+use crate::helpers::{
+    deserialize_u256, encode_address, encode_u256, encode_uint128, keccak_abi_encode,
+};
 
 /// Supported protocols with their specific storage layouts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -208,7 +210,11 @@ pub fn user_vote_slots(
         Protocol::Yb => vec![(1, "user_bias"), (3, "user_end")],
         Protocol::Pendle => vec![(1, "user_bias")],
         // Curve, Balancer, Frax, Fxn, Default: user_end is at slope + 2
-        Protocol::Curve | Protocol::Balancer | Protocol::Frax | Protocol::Fxn | Protocol::Default => {
+        Protocol::Curve
+        | Protocol::Balancer
+        | Protocol::Frax
+        | Protocol::Fxn
+        | Protocol::Default => {
             vec![(2, "user_end")]
         }
     };
@@ -318,17 +324,26 @@ mod tests {
 
     #[test]
     fn test_protocol_gauge_controller_curve() {
-        assert_eq!(Protocol::Curve.gauge_controller(), Some(CURVE_GAUGE_CONTROLLER));
+        assert_eq!(
+            Protocol::Curve.gauge_controller(),
+            Some(CURVE_GAUGE_CONTROLLER)
+        );
     }
 
     #[test]
     fn test_protocol_gauge_controller_balancer() {
-        assert_eq!(Protocol::Balancer.gauge_controller(), Some(BALANCER_GAUGE_CONTROLLER));
+        assert_eq!(
+            Protocol::Balancer.gauge_controller(),
+            Some(BALANCER_GAUGE_CONTROLLER)
+        );
     }
 
     #[test]
     fn test_protocol_gauge_controller_frax() {
-        assert_eq!(Protocol::Frax.gauge_controller(), Some(FRAX_GAUGE_CONTROLLER));
+        assert_eq!(
+            Protocol::Frax.gauge_controller(),
+            Some(FRAX_GAUGE_CONTROLLER)
+        );
     }
 
     #[test]
@@ -338,7 +353,10 @@ mod tests {
 
     #[test]
     fn test_protocol_gauge_controller_pendle() {
-        assert_eq!(Protocol::Pendle.gauge_controller(), Some(PENDLE_GAUGE_CONTROLLER));
+        assert_eq!(
+            Protocol::Pendle.gauge_controller(),
+            Some(PENDLE_GAUGE_CONTROLLER)
+        );
     }
 
     #[test]
@@ -421,19 +439,34 @@ mod tests {
 
     #[test]
     fn test_gauge_time_slot_balancer() {
-        let slot = gauge_time_slot(Protocol::Balancer, TEST_GAUGE, TEST_EPOCH, U256::from(1000000008u64));
+        let slot = gauge_time_slot(
+            Protocol::Balancer,
+            TEST_GAUGE,
+            TEST_EPOCH,
+            U256::from(1000000008u64),
+        );
         assert!(slot > U256::ZERO);
     }
 
     #[test]
     fn test_gauge_time_slot_frax() {
-        let slot = gauge_time_slot(Protocol::Frax, TEST_GAUGE, TEST_EPOCH, U256::from(1000000011u64));
+        let slot = gauge_time_slot(
+            Protocol::Frax,
+            TEST_GAUGE,
+            TEST_EPOCH,
+            U256::from(1000000011u64),
+        );
         assert!(slot > U256::ZERO);
     }
 
     #[test]
     fn test_gauge_time_slot_fxn() {
-        let slot = gauge_time_slot(Protocol::Fxn, TEST_GAUGE, TEST_EPOCH, U256::from(1000000011u64));
+        let slot = gauge_time_slot(
+            Protocol::Fxn,
+            TEST_GAUGE,
+            TEST_EPOCH,
+            U256::from(1000000011u64),
+        );
         assert!(slot > U256::ZERO);
     }
 
@@ -445,22 +478,47 @@ mod tests {
 
     #[test]
     fn test_gauge_time_slot_yb() {
-        let slot = gauge_time_slot(Protocol::Yb, TEST_GAUGE, TEST_EPOCH, U256::from(1000000006u64));
+        let slot = gauge_time_slot(
+            Protocol::Yb,
+            TEST_GAUGE,
+            TEST_EPOCH,
+            U256::from(1000000006u64),
+        );
         assert!(slot > U256::ZERO);
     }
 
     #[test]
     fn test_gauge_time_slot_different_epochs_produce_different_slots() {
-        let slot1 = gauge_time_slot(Protocol::Balancer, TEST_GAUGE, TEST_EPOCH, U256::from(1000000008u64));
-        let slot2 = gauge_time_slot(Protocol::Balancer, TEST_GAUGE, TEST_EPOCH + 604800, U256::from(1000000008u64));
+        let slot1 = gauge_time_slot(
+            Protocol::Balancer,
+            TEST_GAUGE,
+            TEST_EPOCH,
+            U256::from(1000000008u64),
+        );
+        let slot2 = gauge_time_slot(
+            Protocol::Balancer,
+            TEST_GAUGE,
+            TEST_EPOCH + 604800,
+            U256::from(1000000008u64),
+        );
         assert_ne!(slot1, slot2);
     }
 
     #[test]
     fn test_gauge_time_slot_different_gauges_produce_different_slots() {
         let gauge2 = address!("0000000000000000000000000000000000000001");
-        let slot1 = gauge_time_slot(Protocol::Balancer, TEST_GAUGE, TEST_EPOCH, U256::from(1000000008u64));
-        let slot2 = gauge_time_slot(Protocol::Balancer, gauge2, TEST_EPOCH, U256::from(1000000008u64));
+        let slot1 = gauge_time_slot(
+            Protocol::Balancer,
+            TEST_GAUGE,
+            TEST_EPOCH,
+            U256::from(1000000008u64),
+        );
+        let slot2 = gauge_time_slot(
+            Protocol::Balancer,
+            gauge2,
+            TEST_EPOCH,
+            U256::from(1000000008u64),
+        );
         assert_ne!(slot1, slot2);
     }
 
@@ -474,8 +532,18 @@ mod tests {
     #[test]
     fn test_gauge_time_slot_yb_epoch_independent() {
         // Yb doesn't use epoch in slot calculation
-        let slot1 = gauge_time_slot(Protocol::Yb, TEST_GAUGE, TEST_EPOCH, U256::from(1000000006u64));
-        let slot2 = gauge_time_slot(Protocol::Yb, TEST_GAUGE, TEST_EPOCH + 604800, U256::from(1000000006u64));
+        let slot1 = gauge_time_slot(
+            Protocol::Yb,
+            TEST_GAUGE,
+            TEST_EPOCH,
+            U256::from(1000000006u64),
+        );
+        let slot2 = gauge_time_slot(
+            Protocol::Yb,
+            TEST_GAUGE,
+            TEST_EPOCH + 604800,
+            U256::from(1000000006u64),
+        );
         assert_eq!(slot1, slot2);
     }
 

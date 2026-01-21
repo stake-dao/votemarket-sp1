@@ -112,7 +112,8 @@ mod tests {
     // Test addresses
     const TEST_GAUGE: &str = "0x26f7786de3e6d9bd37fcf47be6f2bc455a21b74a";
     const TEST_ACCOUNT: &str = "0xfac2f11ba2577d5122dc1ec5301d35b16688251e";
-    const TEST_STATE_ROOT: &str = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
+    const TEST_STATE_ROOT: &str =
+        "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
     const TEST_EPOCH: u64 = 1730937600;
 
     // =========================================================================

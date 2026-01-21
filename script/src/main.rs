@@ -15,13 +15,14 @@ mod types;
 use alloy_primitives::U256;
 use sp1_sdk::{HashableKey, NetworkSigner, ProverClient, SP1Stdin};
 use std::{
-    env,
-    fs,
+    env, fs,
     path::{Path, PathBuf},
 };
 
 use config::{ProofKind, ProofSource, RunMode};
-use helpers::{decode_abi_public_values, decode_hex_bytes, parse_optional_bool_env, resolve_rpc_url};
+use helpers::{
+    decode_abi_public_values, decode_hex_bytes, parse_optional_bool_env, resolve_rpc_url,
+};
 use input::{build_input_from_rpc, build_input_from_toolkit, expand_requests};
 use proof::persist_proof;
 use rpc::{fetch_block_state_root, fetch_latest_block_number, fetch_proofs};
@@ -112,7 +113,11 @@ async fn main() {
             let latest = fetch_latest_block_number(&http_client, &rpc_url)
                 .await
                 .expect("Failed to fetch latest block number");
-            println!("Latest block: {}, using: {}", latest, latest.saturating_sub(BLOCK_SAFETY_MARGIN));
+            println!(
+                "Latest block: {}, using: {}",
+                latest,
+                latest.saturating_sub(BLOCK_SAFETY_MARGIN)
+            );
             latest.saturating_sub(BLOCK_SAFETY_MARGIN)
         }
     };
@@ -147,7 +152,10 @@ async fn main() {
     );
 
     if use_network {
-        println!("Using Succinct Prover Network for {} proof...", proof_kind.as_str());
+        println!(
+            "Using Succinct Prover Network for {} proof...",
+            proof_kind.as_str()
+        );
         // Set environment variables for network prover
         env::set_var("SP1_PROVER", "network");
 
@@ -169,10 +177,9 @@ async fn main() {
     let mut stdin = SP1Stdin::new();
     let elf = load_elf();
 
-    let (state_root, timestamp) =
-        fetch_block_state_root(&http_client, &rpc_url, block_number)
-            .await
-            .expect("Failed to fetch block state root");
+    let (state_root, timestamp) = fetch_block_state_root(&http_client, &rpc_url, block_number)
+        .await
+        .expect("Failed to fetch block state root");
 
     let epoch = host_input
         .epoch_override
@@ -251,10 +258,10 @@ async fn main() {
             println!("Execution successful!");
 
             // Decode ABI-encoded public values (raw() returns hex string)
-            let raw_bytes = decode_hex_bytes(&public_values.raw())
-                .expect("Failed to decode hex public values");
-            let output = decode_abi_public_values(&raw_bytes)
-                .expect("Failed to decode public values");
+            let raw_bytes =
+                decode_hex_bytes(&public_values.raw()).expect("Failed to decode hex public values");
+            let output =
+                decode_abi_public_values(&raw_bytes).expect("Failed to decode public values");
 
             println!("Cycles: {}", report.total_instruction_count());
             println!("Output:");
@@ -297,8 +304,8 @@ async fn main() {
             // Decode ABI-encoded public values (raw() returns hex string)
             let raw_bytes = decode_hex_bytes(&proof.public_values.raw())
                 .expect("Failed to decode hex public values");
-            let output = decode_abi_public_values(&raw_bytes)
-                .expect("Failed to decode public values");
+            let output =
+                decode_abi_public_values(&raw_bytes).expect("Failed to decode public values");
 
             println!("Proof generated!");
             println!("Output:");
@@ -308,7 +315,8 @@ async fn main() {
             println!("  Account results: {}", output.account_results.len());
 
             let program_vkey = vk.bytes32();
-            persist_proof(program_vkey, proof_kind, &proof, output).expect("Failed to persist proof");
+            persist_proof(program_vkey, proof_kind, &proof, output)
+                .expect("Failed to persist proof");
         }
     }
 }

@@ -11,9 +11,9 @@ fn main() {}
 
 use alloy_primitives::{Address, B256, U256};
 use alloy_rlp::{Decodable, RlpDecodable};
+use alloy_sol_types::sol;
 #[cfg(target_os = "zkvm")]
 use alloy_sol_types::SolValue;
-use alloy_sol_types::sol;
 use eth_trie::{EthTrie, MemoryDB, Trie};
 use ethereum_types::H256;
 use sha3::{Digest, Keccak256};
@@ -269,10 +269,7 @@ mod tests {
     }
 
     /// Helper to create a valid account proof for testing.
-    fn create_account_trie_proof(
-        address: Address,
-        storage_root: B256,
-    ) -> (B256, Vec<Vec<u8>>) {
+    fn create_account_trie_proof(address: Address, storage_root: B256) -> (B256, Vec<Vec<u8>>) {
         let memdb = Arc::new(MemoryDB::new(true));
         let mut trie = EthTrie::new(memdb.clone());
 
@@ -286,7 +283,10 @@ mod tests {
         let mut account_rlp = Vec::new();
         alloy_rlp::Header {
             list: true,
-            payload_length: nonce.length() + balance.length() + storage_root.length() + code_hash.length(),
+            payload_length: nonce.length()
+                + balance.length()
+                + storage_root.length()
+                + code_hash.length(),
         }
         .encode(&mut account_rlp);
         nonce.encode(&mut account_rlp);
@@ -359,7 +359,10 @@ mod tests {
         let mut rlp = Vec::new();
         alloy_rlp::Header {
             list: true,
-            payload_length: nonce.length() + balance.length() + storage_root.length() + code_hash.length(),
+            payload_length: nonce.length()
+                + balance.length()
+                + storage_root.length()
+                + code_hash.length(),
         }
         .encode(&mut rlp);
         nonce.encode(&mut rlp);
@@ -382,7 +385,10 @@ mod tests {
         let mut rlp = Vec::new();
         alloy_rlp::Header {
             list: true,
-            payload_length: nonce.length() + balance.length() + storage_root.length() + code_hash.length(),
+            payload_length: nonce.length()
+                + balance.length()
+                + storage_root.length()
+                + code_hash.length(),
         }
         .encode(&mut rlp);
         nonce.encode(&mut rlp);
@@ -405,7 +411,10 @@ mod tests {
         let mut rlp = Vec::new();
         alloy_rlp::Header {
             list: true,
-            payload_length: nonce.length() + balance.length() + storage_root.length() + code_hash.length(),
+            payload_length: nonce.length()
+                + balance.length()
+                + storage_root.length()
+                + code_hash.length(),
         }
         .encode(&mut rlp);
         nonce.encode(&mut rlp);
@@ -684,9 +693,15 @@ mod tests {
         }
 
         let storage_root = B256::from(trie.root_hash().unwrap().0);
-        let slope_proof = trie.get_proof(&keccak256(&slope_slot.to_be_bytes::<32>())).unwrap();
-        let end_proof = trie.get_proof(&keccak256(&end_slot.to_be_bytes::<32>())).unwrap();
-        let last_vote_proof = trie.get_proof(&keccak256(&last_vote_slot.to_be_bytes::<32>())).unwrap();
+        let slope_proof = trie
+            .get_proof(&keccak256(&slope_slot.to_be_bytes::<32>()))
+            .unwrap();
+        let end_proof = trie
+            .get_proof(&keccak256(&end_slot.to_be_bytes::<32>()))
+            .unwrap();
+        let last_vote_proof = trie
+            .get_proof(&keccak256(&last_vote_slot.to_be_bytes::<32>()))
+            .unwrap();
 
         let (state_root, account_proof) = create_account_trie_proof(gauge_controller, storage_root);
 
@@ -735,8 +750,12 @@ mod tests {
         }
 
         let storage_root = B256::from(trie.root_hash().unwrap().0);
-        let slope_proof = trie.get_proof(&keccak256(&slope_slot.to_be_bytes::<32>())).unwrap();
-        let end_proof = trie.get_proof(&keccak256(&end_slot.to_be_bytes::<32>())).unwrap();
+        let slope_proof = trie
+            .get_proof(&keccak256(&slope_slot.to_be_bytes::<32>()))
+            .unwrap();
+        let end_proof = trie
+            .get_proof(&keccak256(&end_slot.to_be_bytes::<32>()))
+            .unwrap();
 
         let (state_root, account_proof) = create_account_trie_proof(gauge_controller, storage_root);
 
@@ -782,8 +801,12 @@ mod tests {
         }
 
         let storage_root = B256::from(trie.root_hash().unwrap().0);
-        let slope_proof = trie.get_proof(&keccak256(&slope_slot.to_be_bytes::<32>())).unwrap();
-        let end_proof = trie.get_proof(&keccak256(&end_slot.to_be_bytes::<32>())).unwrap();
+        let slope_proof = trie
+            .get_proof(&keccak256(&slope_slot.to_be_bytes::<32>()))
+            .unwrap();
+        let end_proof = trie
+            .get_proof(&keccak256(&end_slot.to_be_bytes::<32>()))
+            .unwrap();
 
         let (state_root, account_proof) = create_account_trie_proof(gauge_controller, storage_root);
 

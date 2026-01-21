@@ -146,14 +146,16 @@ mod tests {
     fn test_toolkit_gauge_proof_deserialize() {
         let json = format!(
             r#"{{
-                "gauge": "{}",
+                "gauge": "{TEST_GAUGE}",
                 "gauge_controller_proof": "0xf851...",
                 "point_data_proof": "0xc1c0..."
-            }}"#,
-            TEST_GAUGE
+            }}"#
         );
         let proof: ToolkitGaugeProof = serde_json::from_str(&json).unwrap();
-        assert_eq!(proof.gauge.to_string().to_lowercase(), TEST_GAUGE.to_lowercase());
+        assert_eq!(
+            proof.gauge.to_string().to_lowercase(),
+            TEST_GAUGE.to_lowercase()
+        );
         assert_eq!(proof.gauge_controller_proof, "0xf851...");
         assert_eq!(proof.point_data_proof, "0xc1c0...");
     }
@@ -166,16 +168,21 @@ mod tests {
     fn test_toolkit_user_proof_deserialize() {
         let json = format!(
             r#"{{
-                "account": "{}",
-                "gauge": "{}",
+                "account": "{TEST_ACCOUNT}",
+                "gauge": "{TEST_GAUGE}",
                 "account_proof": "0xf851...",
                 "storage_proof": "0xc1c0..."
-            }}"#,
-            TEST_ACCOUNT, TEST_GAUGE
+            }}"#
         );
         let proof: ToolkitUserProof = serde_json::from_str(&json).unwrap();
-        assert_eq!(proof.account.to_string().to_lowercase(), TEST_ACCOUNT.to_lowercase());
-        assert_eq!(proof.gauge.to_string().to_lowercase(), TEST_GAUGE.to_lowercase());
+        assert_eq!(
+            proof.account.to_string().to_lowercase(),
+            TEST_ACCOUNT.to_lowercase()
+        );
+        assert_eq!(
+            proof.gauge.to_string().to_lowercase(),
+            TEST_GAUGE.to_lowercase()
+        );
         assert_eq!(proof.account_proof, "0xf851...");
         assert_eq!(proof.storage_proof, "0xc1c0...");
     }
@@ -216,21 +223,20 @@ mod tests {
             r#"{{
                 "gauge_proofs": [
                     {{
-                        "gauge": "{}",
+                        "gauge": "{TEST_GAUGE}",
                         "gauge_controller_proof": "0xf851...",
                         "point_data_proof": "0xc1c0..."
                     }}
                 ],
                 "user_proofs": [
                     {{
-                        "account": "{}",
-                        "gauge": "{}",
+                        "account": "{TEST_ACCOUNT}",
+                        "gauge": "{TEST_GAUGE}",
                         "account_proof": "0xf851...",
                         "storage_proof": "0xc1c0..."
                     }}
                 ]
-            }}"#,
-            TEST_GAUGE, TEST_ACCOUNT, TEST_GAUGE
+            }}"#
         );
         let bundle: ToolkitProofBundle = serde_json::from_str(&json).unwrap();
         assert_eq!(bundle.gauge_proofs.len(), 1);

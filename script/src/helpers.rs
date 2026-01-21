@@ -137,7 +137,9 @@ pub fn parse_optional_address_env(name: &str) -> Option<Address> {
 }
 
 pub fn parse_optional_u256_env(name: &str) -> Option<U256> {
-    env::var(name).ok().and_then(|value| parse_u256(&value).ok())
+    env::var(name)
+        .ok()
+        .and_then(|value| parse_u256(&value).ok())
 }
 
 pub fn parse_optional_bool_env(name: &str) -> Option<bool> {
@@ -679,10 +681,7 @@ mod tests {
 
     #[test]
     fn test_decode_proof_nodes_valid() {
-        let nodes = vec![
-            "0xabcd".to_string(),
-            "0x1234".to_string(),
-        ];
+        let nodes = vec!["0xabcd".to_string(), "0x1234".to_string()];
         let result = decode_proof_nodes(&nodes).unwrap();
         assert_eq!(result.len(), 2);
         assert_eq!(result[0], vec![0xab, 0xcd]);
@@ -788,11 +787,7 @@ mod tests {
         let epoch = U256::from(TEST_EPOCH);
         let bias = U256::from(1000);
 
-        let point_results = vec![PointResult {
-            gauge,
-            epoch,
-            bias,
-        }];
+        let point_results = vec![PointResult { gauge, epoch, bias }];
         let account_results: Vec<AccountResult> = vec![];
 
         let public_values = PublicValues {
@@ -860,12 +855,18 @@ mod tests {
 
     #[test]
     fn test_toolkit_rpc_env_name_optimism() {
-        assert_eq!(toolkit_rpc_env_name(10).unwrap(), "OPTIMISM_MAINNET_RPC_URL");
+        assert_eq!(
+            toolkit_rpc_env_name(10).unwrap(),
+            "OPTIMISM_MAINNET_RPC_URL"
+        );
     }
 
     #[test]
     fn test_toolkit_rpc_env_name_arbitrum() {
-        assert_eq!(toolkit_rpc_env_name(42161).unwrap(), "ARBITRUM_MAINNET_RPC_URL");
+        assert_eq!(
+            toolkit_rpc_env_name(42161).unwrap(),
+            "ARBITRUM_MAINNET_RPC_URL"
+        );
     }
 
     #[test]
@@ -875,7 +876,10 @@ mod tests {
 
     #[test]
     fn test_toolkit_rpc_env_name_polygon() {
-        assert_eq!(toolkit_rpc_env_name(137).unwrap(), "POLYGON_MAINNET_RPC_URL");
+        assert_eq!(
+            toolkit_rpc_env_name(137).unwrap(),
+            "POLYGON_MAINNET_RPC_URL"
+        );
     }
 
     #[test]
