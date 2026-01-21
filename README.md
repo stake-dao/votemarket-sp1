@@ -68,11 +68,8 @@ The verification key uniquely identifies your compiled circuit. Required for dep
 just vkey
 ```
 
-Output:
-
-```
-Program VKEY: 0x00448714119471bb39b1dc6372b9e1b43c326a0867d2b14cbab9819bcea6d4ff
-```
+> [!TIP]
+> The current vkey value used in production is saved in the .vkey file.
 
 **Note**: Any change to `program/src/main.rs`, its dependencies, or the Rust compiler version will produce a different VKEY on rebuild and will require redeploying the contract.
 

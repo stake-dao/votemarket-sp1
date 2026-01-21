@@ -1,0 +1,129 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clippy
+        run: rustup component add clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-clippy-
+
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-test-
+
+      - name: Run tests
+        run: cargo test --workspace --all-targets
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-build-
+
+      - name: Build workspace
+        run: cargo build --workspace --all-targets
+
+  build-guest:
+    name: Build Guest Circuit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SP1 toolchain
+        run: |
+          curl -L https://sp1.succinct.xyz | bash
+          ~/.sp1/bin/sp1up
+          echo "$HOME/.sp1/bin" >> $GITHUB_PATH
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-guest-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-guest-
+
+      - name: Cache SP1 toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/.sp1
+          key: ${{ runner.os }}-sp1-${{ hashFiles('program/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-sp1-
+
+      - name: Build guest circuit
+        working-directory: program
+        run: ~/.sp1/bin/cargo-prove prove build
+
+      - name: Verify VKEY
+        working-directory: script
+        timeout-minutes: 15
+        run: |
+          EXPECTED_VKEY=$(cat ../.vkey | tr -d '[:space:]')
+          GENERATED_VKEY=$(VKEY_ONLY=true cargo run --release 2>&1 | tee /dev/stderr | grep "Program VKEY:" | awk '{print $3}')
+
+          echo "Expected VKEY:  $EXPECTED_VKEY"
+          echo "Generated VKEY: $GENERATED_VKEY"
+
+          if [ "$GENERATED_VKEY" != "$EXPECTED_VKEY" ]; then
+            echo ""
+            echo "::error::VKEY mismatch! The circuit code or dependencies have changed."
+            echo "If this change is intentional, update .vkey and redeploy the on-chain verifier contract."
+            exit 1
+          fi
+
+          echo "VKEY verification passed!"
