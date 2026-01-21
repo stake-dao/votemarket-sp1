@@ -69,7 +69,7 @@ just vkey
 ```
 
 > [!TIP]
-> The current vkey value used in production is saved in the .vkey file.
+> The current vkey value used in production is saved in the .vkey.prod file.
 
 **Note**: Any change to `program/src/main.rs`, its dependencies, or the Rust compiler version will produce a different VKEY on rebuild and will require redeploying the contract.
 
