@@ -17,8 +17,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install clippy
-        run: rustup component add clippy
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.88.0
+          components: clippy
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -40,6 +43,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.88.0
+
       - name: Cache cargo registry
         uses: actions/cache@v4
         with:
@@ -59,6 +67,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.88.0
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -80,10 +93,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.88.0
+
       - name: Install SP1 toolchain
         run: |
           curl -L https://sp1.succinct.xyz | bash
-          ~/.sp1/bin/sp1up
+          ~/.sp1/bin/sp1up --version 5.2.4
           echo "$HOME/.sp1/bin" >> $GITHUB_PATH
 
       - name: Cache cargo registry
@@ -101,7 +119,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.sp1
-          key: ${{ runner.os }}-sp1-${{ hashFiles('program/Cargo.toml') }}
+          key: ${{ runner.os }}-sp1-5.2.4
           restore-keys: |
             ${{ runner.os }}-sp1-
 
@@ -111,7 +129,7 @@ jobs:
 
       - name: Verify VKEY
         working-directory: script
-        timeout-minutes: 15
+        timeout-minutes: 20
         run: |
           EXPECTED_VKEY=$(cat ../.vkey | tr -d '[:space:]')
           GENERATED_VKEY=$(VKEY_ONLY=true cargo run --release 2>&1 | tee /dev/stderr | grep "Program VKEY:" | awk '{print $3}')

@@ -4,6 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-alloy-primitives = { version = "0.8.14", features = ["serde"] }
-serde = { version = "1.0", features = ["derive"] }
-alloy-rlp = "0.3.9"
+alloy-primitives = { version = "=0.8.14", features = ["serde"] }
+serde = { version = "=1.0.228", features = ["derive"] }
+alloy-rlp = "=0.3.9"
