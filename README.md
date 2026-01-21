@@ -273,5 +273,5 @@ just mock           # Integration test
 
 - [SP1 Documentation](https://docs.succinct.xyz/)
 - [Succinct Prover Network](https://docs.succinct.xyz/docs/protocol/introduction)
-- [Votemarket Documentation](https://docs.stakedao.org/votemarket)
+- [Votemarket Documentation](https://docs.stakedao.org/vm_overview/votemarket)
 - [Technical Specification](./SPEC.md)
