@@ -245,3 +245,494 @@ fn user_gauge_slot_pendle(account: Address, gauge: Address, base_slot: U256) -> 
     let encoded_2 = keccak_abi_encode(&[encode_address(gauge), encode_u256(struct_slot)]);
     U256::from_be_bytes(encoded_2)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::address;
+
+    // Known production values
+    const TEST_GAUGE: Address = address!("26f7786de3e6d9bd37fcf47be6f2bc455a21b74a");
+    const TEST_ACCOUNT: Address = address!("fac2f11ba2577d5122dc1ec5301d35b16688251e");
+    const TEST_EPOCH: u64 = 1730937600;
+
+    // Protocol gauge controllers
+    const CURVE_GAUGE_CONTROLLER: Address = address!("2F50D538606Fa9EDD2B11E2446BEb18C9D5846bB");
+    const BALANCER_GAUGE_CONTROLLER: Address = address!("C128468b7Ce63eA702C1f104D55A2566b13D3ABD");
+    const FRAX_GAUGE_CONTROLLER: Address = address!("3669C421b77340B2979d1A00a792CC2ee0FcE737");
+    const FXN_GAUGE_CONTROLLER: Address = address!("e60eB8098B34eD775ac44B1ddE864e098C6d7f37");
+    const PENDLE_GAUGE_CONTROLLER: Address = address!("44087E105137a5095c008AaB6a6530182821F2F0");
+    const YB_GAUGE_CONTROLLER: Address = address!("1Be14811A3a06F6aF4fA64310a636e1Df04c1c21");
+
+    ///////////////////////////////////////////////
+    // PROTOCOL ENUM TESTS
+    ///////////////////////////////////////////////
+
+    #[test]
+    fn test_protocol_from_str_curve() {
+        assert_eq!(Protocol::from_str("curve"), Protocol::Curve);
+        assert_eq!(Protocol::from_str("CURVE"), Protocol::Curve);
+        assert_eq!(Protocol::from_str("Curve"), Protocol::Curve);
+    }
+
+    #[test]
+    fn test_protocol_from_str_balancer() {
+        assert_eq!(Protocol::from_str("balancer"), Protocol::Balancer);
+        assert_eq!(Protocol::from_str("BALANCER"), Protocol::Balancer);
+    }
+
+    #[test]
+    fn test_protocol_from_str_frax() {
+        assert_eq!(Protocol::from_str("frax"), Protocol::Frax);
+        assert_eq!(Protocol::from_str("FRAX"), Protocol::Frax);
+    }
+
+    #[test]
+    fn test_protocol_from_str_fxn() {
+        assert_eq!(Protocol::from_str("fxn"), Protocol::Fxn);
+        assert_eq!(Protocol::from_str("FXN"), Protocol::Fxn);
+    }
+
+    #[test]
+    fn test_protocol_from_str_yb() {
+        assert_eq!(Protocol::from_str("yb"), Protocol::Yb);
+        assert_eq!(Protocol::from_str("YB"), Protocol::Yb);
+    }
+
+    #[test]
+    fn test_protocol_from_str_pendle() {
+        assert_eq!(Protocol::from_str("pendle"), Protocol::Pendle);
+        assert_eq!(Protocol::from_str("PENDLE"), Protocol::Pendle);
+    }
+
+    #[test]
+    fn test_protocol_from_str_unknown() {
+        assert_eq!(Protocol::from_str("unknown"), Protocol::Default);
+        assert_eq!(Protocol::from_str(""), Protocol::Default);
+        assert_eq!(Protocol::from_str("random"), Protocol::Default);
+    }
+
+    ///////////////////////////////////////////////
+    // PROTOCOL GAUGE CONTROLLER TESTS
+    ///////////////////////////////////////////////
+
+    #[test]
+    fn test_protocol_gauge_controller_curve() {
+        assert_eq!(Protocol::Curve.gauge_controller(), Some(CURVE_GAUGE_CONTROLLER));
+    }
+
+    #[test]
+    fn test_protocol_gauge_controller_balancer() {
+        assert_eq!(Protocol::Balancer.gauge_controller(), Some(BALANCER_GAUGE_CONTROLLER));
+    }
+
+    #[test]
+    fn test_protocol_gauge_controller_frax() {
+        assert_eq!(Protocol::Frax.gauge_controller(), Some(FRAX_GAUGE_CONTROLLER));
+    }
+
+    #[test]
+    fn test_protocol_gauge_controller_fxn() {
+        assert_eq!(Protocol::Fxn.gauge_controller(), Some(FXN_GAUGE_CONTROLLER));
+    }
+
+    #[test]
+    fn test_protocol_gauge_controller_pendle() {
+        assert_eq!(Protocol::Pendle.gauge_controller(), Some(PENDLE_GAUGE_CONTROLLER));
+    }
+
+    #[test]
+    fn test_protocol_gauge_controller_yb() {
+        assert_eq!(Protocol::Yb.gauge_controller(), Some(YB_GAUGE_CONTROLLER));
+    }
+
+    #[test]
+    fn test_protocol_gauge_controller_default_none() {
+        assert_eq!(Protocol::Default.gauge_controller(), None);
+    }
+
+    ///////////////////////////////////////////////
+    // PROTOCOL TOOLKIT SLOTS TESTS
+    ///////////////////////////////////////////////
+
+    #[test]
+    fn test_protocol_toolkit_slots_curve() {
+        let slots = Protocol::Curve.toolkit_slots().unwrap();
+        assert_eq!(slots.weight_mapping_slot, U256::from(12));
+        assert_eq!(slots.last_vote_mapping_slot, U256::from(11));
+        assert_eq!(slots.user_slope_mapping_slot, U256::from(9));
+    }
+
+    #[test]
+    fn test_protocol_toolkit_slots_balancer() {
+        let slots = Protocol::Balancer.toolkit_slots().unwrap();
+        assert_eq!(slots.weight_mapping_slot, U256::from(1000000008u64));
+        assert_eq!(slots.last_vote_mapping_slot, U256::from(1000000007u64));
+        assert_eq!(slots.user_slope_mapping_slot, U256::from(1000000005u64));
+    }
+
+    #[test]
+    fn test_protocol_toolkit_slots_frax() {
+        let slots = Protocol::Frax.toolkit_slots().unwrap();
+        assert_eq!(slots.weight_mapping_slot, U256::from(1000000011u64));
+        assert_eq!(slots.last_vote_mapping_slot, U256::from(1000000010u64));
+        assert_eq!(slots.user_slope_mapping_slot, U256::from(1000000008u64));
+    }
+
+    #[test]
+    fn test_protocol_toolkit_slots_fxn() {
+        let slots = Protocol::Fxn.toolkit_slots().unwrap();
+        assert_eq!(slots.weight_mapping_slot, U256::from(1000000011u64));
+        assert_eq!(slots.last_vote_mapping_slot, U256::from(1000000010u64));
+        assert_eq!(slots.user_slope_mapping_slot, U256::from(1000000008u64));
+    }
+
+    #[test]
+    fn test_protocol_toolkit_slots_pendle() {
+        let slots = Protocol::Pendle.toolkit_slots().unwrap();
+        assert_eq!(slots.weight_mapping_slot, U256::from(161));
+        assert_eq!(slots.last_vote_mapping_slot, U256::ZERO); // Pendle has no last_user_vote
+        assert_eq!(slots.user_slope_mapping_slot, U256::from(162));
+    }
+
+    #[test]
+    fn test_protocol_toolkit_slots_yb() {
+        let slots = Protocol::Yb.toolkit_slots().unwrap();
+        assert_eq!(slots.weight_mapping_slot, U256::from(1000000006u64));
+        assert_eq!(slots.last_vote_mapping_slot, U256::from(1000000005u64));
+        assert_eq!(slots.user_slope_mapping_slot, U256::from(1000000003u64));
+    }
+
+    #[test]
+    fn test_protocol_toolkit_slots_default_none() {
+        assert!(Protocol::Default.toolkit_slots().is_none());
+    }
+
+    ///////////////////////////////////////////////
+    // GAUGE TIME SLOT TESTS
+    ///////////////////////////////////////////////
+
+    #[test]
+    fn test_gauge_time_slot_curve() {
+        let slot = gauge_time_slot(Protocol::Curve, TEST_GAUGE, TEST_EPOCH, U256::from(12));
+        // Should produce a 256-bit slot value
+        assert!(slot > U256::ZERO);
+    }
+
+    #[test]
+    fn test_gauge_time_slot_balancer() {
+        let slot = gauge_time_slot(Protocol::Balancer, TEST_GAUGE, TEST_EPOCH, U256::from(1000000008u64));
+        assert!(slot > U256::ZERO);
+    }
+
+    #[test]
+    fn test_gauge_time_slot_frax() {
+        let slot = gauge_time_slot(Protocol::Frax, TEST_GAUGE, TEST_EPOCH, U256::from(1000000011u64));
+        assert!(slot > U256::ZERO);
+    }
+
+    #[test]
+    fn test_gauge_time_slot_fxn() {
+        let slot = gauge_time_slot(Protocol::Fxn, TEST_GAUGE, TEST_EPOCH, U256::from(1000000011u64));
+        assert!(slot > U256::ZERO);
+    }
+
+    #[test]
+    fn test_gauge_time_slot_pendle() {
+        let slot = gauge_time_slot(Protocol::Pendle, TEST_GAUGE, TEST_EPOCH, U256::from(161));
+        assert!(slot > U256::ZERO);
+    }
+
+    #[test]
+    fn test_gauge_time_slot_yb() {
+        let slot = gauge_time_slot(Protocol::Yb, TEST_GAUGE, TEST_EPOCH, U256::from(1000000006u64));
+        assert!(slot > U256::ZERO);
+    }
+
+    #[test]
+    fn test_gauge_time_slot_different_epochs_produce_different_slots() {
+        let slot1 = gauge_time_slot(Protocol::Balancer, TEST_GAUGE, TEST_EPOCH, U256::from(1000000008u64));
+        let slot2 = gauge_time_slot(Protocol::Balancer, TEST_GAUGE, TEST_EPOCH + 604800, U256::from(1000000008u64));
+        assert_ne!(slot1, slot2);
+    }
+
+    #[test]
+    fn test_gauge_time_slot_different_gauges_produce_different_slots() {
+        let gauge2 = address!("0000000000000000000000000000000000000001");
+        let slot1 = gauge_time_slot(Protocol::Balancer, TEST_GAUGE, TEST_EPOCH, U256::from(1000000008u64));
+        let slot2 = gauge_time_slot(Protocol::Balancer, gauge2, TEST_EPOCH, U256::from(1000000008u64));
+        assert_ne!(slot1, slot2);
+    }
+
+    #[test]
+    fn test_gauge_time_slot_deterministic() {
+        let slot1 = gauge_time_slot(Protocol::Curve, TEST_GAUGE, TEST_EPOCH, U256::from(12));
+        let slot2 = gauge_time_slot(Protocol::Curve, TEST_GAUGE, TEST_EPOCH, U256::from(12));
+        assert_eq!(slot1, slot2);
+    }
+
+    #[test]
+    fn test_gauge_time_slot_yb_epoch_independent() {
+        // Yb doesn't use epoch in slot calculation
+        let slot1 = gauge_time_slot(Protocol::Yb, TEST_GAUGE, TEST_EPOCH, U256::from(1000000006u64));
+        let slot2 = gauge_time_slot(Protocol::Yb, TEST_GAUGE, TEST_EPOCH + 604800, U256::from(1000000006u64));
+        assert_eq!(slot1, slot2);
+    }
+
+    ///////////////////////////////////////////////
+    // SLOT CALCULATION FUNCTION TESTS
+    ///////////////////////////////////////////////
+
+    #[test]
+    fn test_gauge_time_slot_default_produces_valid_slot() {
+        let slot = gauge_time_slot_default(TEST_GAUGE, TEST_EPOCH, U256::from(1000000008u64));
+        // Slot should be a keccak hash, so it should have high entropy
+        assert!(slot > U256::ZERO);
+    }
+
+    #[test]
+    fn test_gauge_time_slot_pre_vyper03_produces_valid_slot() {
+        let slot = gauge_time_slot_pre_vyper03(TEST_GAUGE, TEST_EPOCH, U256::from(12));
+        assert!(slot > U256::ZERO);
+    }
+
+    #[test]
+    fn test_gauge_time_slot_pre_vyper03_different_from_default() {
+        // Pre-vyper03 has extra hash layer, so should be different from default
+        let slot_pre = gauge_time_slot_pre_vyper03(TEST_GAUGE, TEST_EPOCH, U256::from(12));
+        let slot_default = gauge_time_slot_default(TEST_GAUGE, TEST_EPOCH, U256::from(12));
+        assert_ne!(slot_pre, slot_default);
+    }
+
+    #[test]
+    fn test_gauge_time_slot_yb_produces_valid_slot() {
+        let slot = gauge_time_slot_yb(TEST_GAUGE, U256::from(1000000006u64));
+        assert!(slot > U256::ZERO);
+    }
+
+    #[test]
+    fn test_gauge_time_slot_pendle_produces_valid_slot() {
+        let slot = gauge_time_slot_pendle(TEST_GAUGE, TEST_EPOCH, U256::from(161));
+        assert!(slot > U256::ZERO);
+    }
+
+    ///////////////////////////////////////////////
+    // USER VOTE SLOTS TESTS
+    ///////////////////////////////////////////////
+
+    #[test]
+    fn test_user_vote_slots_curve() {
+        let slots = user_vote_slots(
+            Protocol::Curve,
+            TEST_ACCOUNT,
+            TEST_GAUGE,
+            U256::from(11), // last_vote_mapping_slot
+            U256::from(9),  // user_slope_mapping_slot
+        );
+        // Curve should have: last_vote, user_slope, user_end (3 slots)
+        assert_eq!(slots.len(), 3);
+        assert!(slots.iter().any(|s| s.label == "last_vote"));
+        assert!(slots.iter().any(|s| s.label == "user_slope"));
+        assert!(slots.iter().any(|s| s.label == "user_end"));
+    }
+
+    #[test]
+    fn test_user_vote_slots_pendle_no_last_vote() {
+        let slots = user_vote_slots(
+            Protocol::Pendle,
+            TEST_ACCOUNT,
+            TEST_GAUGE,
+            U256::ZERO, // Pendle has no last_user_vote
+            U256::from(162),
+        );
+        // Pendle should NOT have last_vote
+        assert!(!slots.iter().any(|s| s.label == "last_vote"));
+        // Pendle should have: user_slope, user_bias
+        assert!(slots.iter().any(|s| s.label == "user_slope"));
+        assert!(slots.iter().any(|s| s.label == "user_bias"));
+    }
+
+    #[test]
+    fn test_user_vote_slots_yb_has_bias() {
+        let slots = user_vote_slots(
+            Protocol::Yb,
+            TEST_ACCOUNT,
+            TEST_GAUGE,
+            U256::from(1000000005u64),
+            U256::from(1000000003u64),
+        );
+        // Yb should have: last_vote, user_slope, user_bias, user_end (4 slots)
+        assert_eq!(slots.len(), 4);
+        assert!(slots.iter().any(|s| s.label == "last_vote"));
+        assert!(slots.iter().any(|s| s.label == "user_slope"));
+        assert!(slots.iter().any(|s| s.label == "user_bias"));
+        assert!(slots.iter().any(|s| s.label == "user_end"));
+    }
+
+    #[test]
+    fn test_user_vote_slots_balancer() {
+        let slots = user_vote_slots(
+            Protocol::Balancer,
+            TEST_ACCOUNT,
+            TEST_GAUGE,
+            U256::from(1000000007u64),
+            U256::from(1000000005u64),
+        );
+        // Balancer should have: last_vote, user_slope, user_end (3 slots)
+        assert_eq!(slots.len(), 3);
+    }
+
+    #[test]
+    fn test_user_vote_slots_deterministic() {
+        let slots1 = user_vote_slots(
+            Protocol::Curve,
+            TEST_ACCOUNT,
+            TEST_GAUGE,
+            U256::from(11),
+            U256::from(9),
+        );
+        let slots2 = user_vote_slots(
+            Protocol::Curve,
+            TEST_ACCOUNT,
+            TEST_GAUGE,
+            U256::from(11),
+            U256::from(9),
+        );
+        assert_eq!(slots1.len(), slots2.len());
+        for (s1, s2) in slots1.iter().zip(slots2.iter()) {
+            assert_eq!(s1.label, s2.label);
+            assert_eq!(s1.slot, s2.slot);
+        }
+    }
+
+    #[test]
+    fn test_user_vote_slots_different_accounts() {
+        let account2 = address!("0000000000000000000000000000000000000001");
+        let slots1 = user_vote_slots(
+            Protocol::Curve,
+            TEST_ACCOUNT,
+            TEST_GAUGE,
+            U256::from(11),
+            U256::from(9),
+        );
+        let slots2 = user_vote_slots(
+            Protocol::Curve,
+            account2,
+            TEST_GAUGE,
+            U256::from(11),
+            U256::from(9),
+        );
+        // Slots should be different for different accounts
+        assert_ne!(slots1[0].slot, slots2[0].slot);
+    }
+
+    #[test]
+    fn test_user_vote_slots_different_gauges() {
+        let gauge2 = address!("0000000000000000000000000000000000000001");
+        let slots1 = user_vote_slots(
+            Protocol::Curve,
+            TEST_ACCOUNT,
+            TEST_GAUGE,
+            U256::from(11),
+            U256::from(9),
+        );
+        let slots2 = user_vote_slots(
+            Protocol::Curve,
+            TEST_ACCOUNT,
+            gauge2,
+            U256::from(11),
+            U256::from(9),
+        );
+        // Slots should be different for different gauges
+        assert_ne!(slots1[0].slot, slots2[0].slot);
+    }
+
+    ///////////////////////////////////////////////
+    // USER GAUGE SLOT CALCULATION TESTS
+    ///////////////////////////////////////////////
+
+    #[test]
+    fn test_user_gauge_slot_default_produces_valid_slot() {
+        let slot = user_gauge_slot_default(TEST_ACCOUNT, TEST_GAUGE, U256::from(11));
+        assert!(slot > U256::ZERO);
+    }
+
+    #[test]
+    fn test_user_gauge_slot_pre_vyper03_produces_valid_slot() {
+        let slot = user_gauge_slot_pre_vyper03(TEST_ACCOUNT, TEST_GAUGE, U256::from(9));
+        assert!(slot > U256::ZERO);
+    }
+
+    #[test]
+    fn test_user_gauge_slot_pre_vyper03_different_from_default() {
+        let slot_pre = user_gauge_slot_pre_vyper03(TEST_ACCOUNT, TEST_GAUGE, U256::from(9));
+        let slot_default = user_gauge_slot_default(TEST_ACCOUNT, TEST_GAUGE, U256::from(9));
+        assert_ne!(slot_pre, slot_default);
+    }
+
+    #[test]
+    fn test_user_gauge_slot_pendle_produces_valid_slot() {
+        let slot = user_gauge_slot_pendle(TEST_ACCOUNT, TEST_GAUGE, U256::from(162));
+        assert!(slot > U256::ZERO);
+    }
+
+    #[test]
+    fn test_user_end_slot_offset() {
+        // For Curve/Balancer/Frax/Fxn, user_end is at slope + 2
+        let slots = user_vote_slots(
+            Protocol::Curve,
+            TEST_ACCOUNT,
+            TEST_GAUGE,
+            U256::from(11),
+            U256::from(9),
+        );
+        let slope_slot = slots.iter().find(|s| s.label == "user_slope").unwrap();
+        let end_slot = slots.iter().find(|s| s.label == "user_end").unwrap();
+        assert_eq!(end_slot.slot, slope_slot.slot + U256::from(2));
+    }
+
+    #[test]
+    fn test_yb_user_bias_offset() {
+        // For Yb, user_bias is at slope + 1
+        let slots = user_vote_slots(
+            Protocol::Yb,
+            TEST_ACCOUNT,
+            TEST_GAUGE,
+            U256::from(1000000005u64),
+            U256::from(1000000003u64),
+        );
+        let slope_slot = slots.iter().find(|s| s.label == "user_slope").unwrap();
+        let bias_slot = slots.iter().find(|s| s.label == "user_bias").unwrap();
+        assert_eq!(bias_slot.slot, slope_slot.slot + U256::from(1));
+    }
+
+    #[test]
+    fn test_yb_user_end_offset() {
+        // For Yb, user_end is at slope + 3
+        let slots = user_vote_slots(
+            Protocol::Yb,
+            TEST_ACCOUNT,
+            TEST_GAUGE,
+            U256::from(1000000005u64),
+            U256::from(1000000003u64),
+        );
+        let slope_slot = slots.iter().find(|s| s.label == "user_slope").unwrap();
+        let end_slot = slots.iter().find(|s| s.label == "user_end").unwrap();
+        assert_eq!(end_slot.slot, slope_slot.slot + U256::from(3));
+    }
+
+    #[test]
+    fn test_pendle_user_bias_offset() {
+        // For Pendle, user_bias is at slope + 1
+        let slots = user_vote_slots(
+            Protocol::Pendle,
+            TEST_ACCOUNT,
+            TEST_GAUGE,
+            U256::ZERO,
+            U256::from(162),
+        );
+        let slope_slot = slots.iter().find(|s| s.label == "user_slope").unwrap();
+        let bias_slot = slots.iter().find(|s| s.label == "user_bias").unwrap();
+        assert_eq!(bias_slot.slot, slope_slot.slot + U256::from(1));
+    }
+}

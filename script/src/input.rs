@@ -301,3 +301,189 @@ pub fn build_input_from_toolkit(
         account_requests,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::{Protocol, SlotConfig};
+    use crate::types::{HostInput, RequestItem, RequestKind};
+    use alloy_primitives::{address, U256};
+
+    // Test fixtures
+    const TEST_GAUGE: Address = address!("26f7786de3e6d9bd37fcf47be6f2bc455a21b74a");
+    const TEST_ACCOUNT: Address = address!("fac2f11ba2577d5122dc1ec5301d35b16688251e");
+    const TEST_EPOCH: u64 = 1730937600;
+
+    fn make_test_host_input(protocol: Protocol, requests: Vec<RequestItem>) -> HostInput {
+        let slots = protocol.toolkit_slots().unwrap_or(SlotConfig {
+            weight_mapping_slot: U256::from(12),
+            last_vote_mapping_slot: U256::from(11),
+            user_slope_mapping_slot: U256::from(9),
+        });
+        HostInput {
+            chain_id: 1,
+            block_number: Some(21134723),
+            epoch_override: Some(TEST_EPOCH),
+            protocol,
+            protocol_name: "curve".to_string(),
+            gauge_controller: protocol
+                .gauge_controller()
+                .unwrap_or(address!("2F50D538606Fa9EDD2B11E2446BEb18C9D5846bB")),
+            slots,
+            requests,
+        }
+    }
+
+    ///////////////////////////////////////////////
+    // EXPAND REQUESTS TESTS
+    ///////////////////////////////////////////////
+
+    #[test]
+    fn test_expand_requests_point_data() {
+        let requests = vec![RequestItem {
+            kind: RequestKind::PointData,
+            account: None,
+            gauge: Some(TEST_GAUGE),
+        }];
+        let input = make_test_host_input(Protocol::Curve, requests);
+        let expanded = expand_requests(&input, TEST_EPOCH).unwrap();
+
+        assert_eq!(expanded.len(), 1);
+        assert!(matches!(expanded[0].kind, RequestKind::PointData));
+        assert_eq!(expanded[0].gauge, TEST_GAUGE);
+        assert!(expanded[0].account.is_none());
+        // Point data should have a single weight_bias slot
+        assert_eq!(expanded[0].slots.len(), 1);
+        assert_eq!(expanded[0].slots[0].label, "weight_bias");
+    }
+
+    #[test]
+    fn test_expand_requests_account_data_curve() {
+        let requests = vec![RequestItem {
+            kind: RequestKind::AccountData,
+            account: Some(TEST_ACCOUNT),
+            gauge: Some(TEST_GAUGE),
+        }];
+        let input = make_test_host_input(Protocol::Curve, requests);
+        let expanded = expand_requests(&input, TEST_EPOCH).unwrap();
+
+        assert_eq!(expanded.len(), 1);
+        assert!(matches!(expanded[0].kind, RequestKind::AccountData));
+        assert_eq!(expanded[0].account, Some(TEST_ACCOUNT));
+        // Curve account data should have 3 slots: last_vote, user_slope, user_end
+        assert_eq!(expanded[0].slots.len(), 3);
+        assert!(expanded[0].slots.iter().any(|s| s.label == "last_vote"));
+        assert!(expanded[0].slots.iter().any(|s| s.label == "user_slope"));
+        assert!(expanded[0].slots.iter().any(|s| s.label == "user_end"));
+    }
+
+    #[test]
+    fn test_expand_requests_account_data_pendle_no_last_vote() {
+        let requests = vec![RequestItem {
+            kind: RequestKind::AccountData,
+            account: Some(TEST_ACCOUNT),
+            gauge: Some(TEST_GAUGE),
+        }];
+        let input = make_test_host_input(Protocol::Pendle, requests);
+        let expanded = expand_requests(&input, TEST_EPOCH).unwrap();
+
+        // Pendle should NOT have last_vote slot
+        assert!(!expanded[0].slots.iter().any(|s| s.label == "last_vote"));
+        // Pendle should have user_slope and user_bias
+        assert!(expanded[0].slots.iter().any(|s| s.label == "user_slope"));
+        assert!(expanded[0].slots.iter().any(|s| s.label == "user_bias"));
+    }
+
+    #[test]
+    fn test_expand_requests_missing_gauge_error() {
+        let requests = vec![RequestItem {
+            kind: RequestKind::PointData,
+            account: None,
+            gauge: None, // Missing gauge
+        }];
+        let input = make_test_host_input(Protocol::Curve, requests);
+        let result = expand_requests(&input, TEST_EPOCH);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("missing gauge"));
+    }
+
+    #[test]
+    fn test_expand_requests_missing_account_error() {
+        let requests = vec![RequestItem {
+            kind: RequestKind::AccountData,
+            account: None, // Missing account for account_data
+            gauge: Some(TEST_GAUGE),
+        }];
+        let input = make_test_host_input(Protocol::Curve, requests);
+        let result = expand_requests(&input, TEST_EPOCH);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("missing account"));
+    }
+
+    #[test]
+    fn test_expand_requests_multiple_requests() {
+        let requests = vec![
+            RequestItem {
+                kind: RequestKind::PointData,
+                account: None,
+                gauge: Some(TEST_GAUGE),
+            },
+            RequestItem {
+                kind: RequestKind::AccountData,
+                account: Some(TEST_ACCOUNT),
+                gauge: Some(TEST_GAUGE),
+            },
+        ];
+        let input = make_test_host_input(Protocol::Curve, requests);
+        let expanded = expand_requests(&input, TEST_EPOCH).unwrap();
+
+        assert_eq!(expanded.len(), 2);
+        assert!(matches!(expanded[0].kind, RequestKind::PointData));
+        assert!(matches!(expanded[1].kind, RequestKind::AccountData));
+    }
+
+    #[test]
+    fn test_expand_requests_empty() {
+        let input = make_test_host_input(Protocol::Curve, vec![]);
+        let expanded = expand_requests(&input, TEST_EPOCH).unwrap();
+        assert!(expanded.is_empty());
+    }
+
+    #[test]
+    fn test_expand_requests_yb_has_four_slots() {
+        let requests = vec![RequestItem {
+            kind: RequestKind::AccountData,
+            account: Some(TEST_ACCOUNT),
+            gauge: Some(TEST_GAUGE),
+        }];
+        let input = make_test_host_input(Protocol::Yb, requests);
+        let expanded = expand_requests(&input, TEST_EPOCH).unwrap();
+
+        // Yb should have 4 slots: last_vote, user_slope, user_bias, user_end
+        assert_eq!(expanded[0].slots.len(), 4);
+    }
+
+    #[test]
+    fn test_expand_requests_different_epochs_different_slots() {
+        let requests1 = vec![RequestItem {
+            kind: RequestKind::PointData,
+            account: None,
+            gauge: Some(TEST_GAUGE),
+        }];
+        let input1 = make_test_host_input(Protocol::Balancer, requests1);
+        let expanded1 = expand_requests(&input1, TEST_EPOCH).unwrap();
+
+        let requests2 = vec![RequestItem {
+            kind: RequestKind::PointData,
+            account: None,
+            gauge: Some(TEST_GAUGE),
+        }];
+        let input2 = make_test_host_input(Protocol::Balancer, requests2);
+        let expanded2 = expand_requests(&input2, TEST_EPOCH + 604800).unwrap();
+
+        // Different epochs should produce different slots for protocols that use epoch
+        assert_ne!(expanded1[0].slots[0].slot, expanded2[0].slots[0].slot);
+    }
+}

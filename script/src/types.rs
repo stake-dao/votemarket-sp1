@@ -239,3 +239,323 @@ pub struct ProofArtifact {
     pub public_values_hash_bn254: String,
     pub output: Output,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::{address, U256};
+
+    // Test fixtures
+    const TEST_GAUGE: &str = "0x26f7786de3e6d9bd37fcf47be6f2bc455a21b74a";
+    const TEST_ACCOUNT: &str = "0xfac2f11ba2577d5122dc1ec5301d35b16688251e";
+    const TEST_EPOCH: u64 = 1730937600;
+    const TEST_BLOCK: u64 = 21134723;
+
+    ///////////////////////////////////////////////
+    // REQUEST KIND TESTS
+    ///////////////////////////////////////////////
+
+    #[test]
+    fn test_request_kind_deserialize_account_data() {
+        let json = r#""account_data""#;
+        let kind: RequestKind = serde_json::from_str(json).unwrap();
+        assert!(matches!(kind, RequestKind::AccountData));
+    }
+
+    #[test]
+    fn test_request_kind_deserialize_point_data() {
+        let json = r#""point_data""#;
+        let kind: RequestKind = serde_json::from_str(json).unwrap();
+        assert!(matches!(kind, RequestKind::PointData));
+    }
+
+    #[test]
+    fn test_request_kind_serialize_account_data() {
+        let json = serde_json::to_string(&RequestKind::AccountData).unwrap();
+        assert_eq!(json, r#""account_data""#);
+    }
+
+    #[test]
+    fn test_request_kind_serialize_point_data() {
+        let json = serde_json::to_string(&RequestKind::PointData).unwrap();
+        assert_eq!(json, r#""point_data""#);
+    }
+
+    ///////////////////////////////////////////////
+    // REQUEST ITEM TESTS
+    ///////////////////////////////////////////////
+
+    #[test]
+    fn test_request_item_point_data() {
+        let json = format!(
+            r#"{{"type": "point_data", "gauge": "{}"}}"#,
+            TEST_GAUGE
+        );
+        let item: RequestItem = serde_json::from_str(&json).unwrap();
+        assert!(matches!(item.kind, RequestKind::PointData));
+        assert!(item.account.is_none());
+        assert!(item.gauge.is_some());
+    }
+
+    #[test]
+    fn test_request_item_account_data() {
+        let json = format!(
+            r#"{{"type": "account_data", "account": "{}", "gauge": "{}"}}"#,
+            TEST_ACCOUNT, TEST_GAUGE
+        );
+        let item: RequestItem = serde_json::from_str(&json).unwrap();
+        assert!(matches!(item.kind, RequestKind::AccountData));
+        assert!(item.account.is_some());
+        assert!(item.gauge.is_some());
+    }
+
+    #[test]
+    fn test_request_item_null_account() {
+        let json = format!(
+            r#"{{"type": "point_data", "account": null, "gauge": "{}"}}"#,
+            TEST_GAUGE
+        );
+        let item: RequestItem = serde_json::from_str(&json).unwrap();
+        assert!(item.account.is_none());
+    }
+
+    #[test]
+    fn test_request_item_missing_optional_fields() {
+        let json = r#"{"type": "point_data"}"#;
+        let item: RequestItem = serde_json::from_str(json).unwrap();
+        assert!(item.account.is_none());
+        assert!(item.gauge.is_none());
+    }
+
+    ///////////////////////////////////////////////
+    // HOST REQUEST TESTS
+    ///////////////////////////////////////////////
+
+    #[test]
+    fn test_host_request_minimal() {
+        let json = format!(
+            r#"{{
+                "chain_id": 1,
+                "block_number": {},
+                "requests": []
+            }}"#,
+            TEST_BLOCK
+        );
+        let request: HostRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(request.chain_id, 1);
+        assert_eq!(request.block_number, TEST_BLOCK);
+        assert!(request.epoch.is_none());
+        assert!(request.protocol.is_none());
+        assert!(request.gauge_controller.is_none());
+        assert!(request.slots.is_none());
+        assert!(request.requests.is_empty());
+    }
+
+    #[test]
+    fn test_host_request_full() {
+        let json = format!(
+            r#"{{
+                "chain_id": 1,
+                "block_number": {},
+                "epoch": {},
+                "protocol": "curve",
+                "gauge_controller": "0x2F50D538606Fa9EDD2B11E2446BEb18C9D5846bB",
+                "slots": {{
+                    "weight_mapping_slot": "12",
+                    "last_vote_mapping_slot": "11",
+                    "user_slope_mapping_slot": "9"
+                }},
+                "requests": [
+                    {{"type": "point_data", "gauge": "{}"}},
+                    {{"type": "account_data", "account": "{}", "gauge": "{}"}}
+                ]
+            }}"#,
+            TEST_BLOCK, TEST_EPOCH, TEST_GAUGE, TEST_ACCOUNT, TEST_GAUGE
+        );
+        let request: HostRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(request.chain_id, 1);
+        assert_eq!(request.block_number, TEST_BLOCK);
+        assert_eq!(request.epoch, Some(TEST_EPOCH));
+        assert_eq!(request.protocol, Some("curve".to_string()));
+        assert!(request.gauge_controller.is_some());
+        assert!(request.slots.is_some());
+        assert_eq!(request.requests.len(), 2);
+    }
+
+    ///////////////////////////////////////////////
+    // HOST INPUT FROM_REQUEST TESTS
+    ///////////////////////////////////////////////
+
+    #[test]
+    fn test_host_input_from_request_curve_defaults() {
+        let request = HostRequest {
+            chain_id: 1,
+            block_number: TEST_BLOCK,
+            epoch: Some(TEST_EPOCH),
+            protocol: Some("curve".to_string()),
+            gauge_controller: None, // Should use default
+            slots: None,            // Should use default
+            requests: vec![],
+        };
+        let input = HostInput::from_request(request).unwrap();
+        assert_eq!(input.chain_id, 1);
+        assert_eq!(input.block_number, Some(TEST_BLOCK));
+        assert_eq!(input.epoch_override, Some(TEST_EPOCH));
+        assert!(matches!(input.protocol, Protocol::Curve));
+        assert_eq!(
+            input.gauge_controller,
+            address!("2F50D538606Fa9EDD2B11E2446BEb18C9D5846bB")
+        );
+        assert_eq!(input.slots.weight_mapping_slot, U256::from(12));
+    }
+
+    #[test]
+    fn test_host_input_from_request_custom_slots() {
+        let request = HostRequest {
+            chain_id: 1,
+            block_number: TEST_BLOCK,
+            epoch: None,
+            protocol: Some("curve".to_string()),
+            gauge_controller: None,
+            slots: Some(crate::protocol::SlotConfig {
+                weight_mapping_slot: U256::from(100),
+                last_vote_mapping_slot: U256::from(101),
+                user_slope_mapping_slot: U256::from(102),
+            }),
+            requests: vec![],
+        };
+        let input = HostInput::from_request(request).unwrap();
+        assert_eq!(input.slots.weight_mapping_slot, U256::from(100));
+        assert_eq!(input.slots.last_vote_mapping_slot, U256::from(101));
+        assert_eq!(input.slots.user_slope_mapping_slot, U256::from(102));
+    }
+
+    #[test]
+    fn test_host_input_from_request_unknown_protocol_error() {
+        let request = HostRequest {
+            chain_id: 1,
+            block_number: TEST_BLOCK,
+            epoch: None,
+            protocol: Some("unknown_protocol".to_string()),
+            gauge_controller: None,
+            slots: None,
+            requests: vec![],
+        };
+        let result = HostInput::from_request(request);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_host_input_from_request_balancer() {
+        let request = HostRequest {
+            chain_id: 1,
+            block_number: TEST_BLOCK,
+            epoch: None,
+            protocol: Some("balancer".to_string()),
+            gauge_controller: None,
+            slots: None,
+            requests: vec![],
+        };
+        let input = HostInput::from_request(request).unwrap();
+        assert!(matches!(input.protocol, Protocol::Balancer));
+        assert_eq!(
+            input.gauge_controller,
+            address!("C128468b7Ce63eA702C1f104D55A2566b13D3ABD")
+        );
+    }
+
+    #[test]
+    fn test_host_input_from_request_pendle() {
+        let request = HostRequest {
+            chain_id: 1,
+            block_number: TEST_BLOCK,
+            epoch: None,
+            protocol: Some("pendle".to_string()),
+            gauge_controller: None,
+            slots: None,
+            requests: vec![],
+        };
+        let input = HostInput::from_request(request).unwrap();
+        assert!(matches!(input.protocol, Protocol::Pendle));
+        assert_eq!(input.slots.last_vote_mapping_slot, U256::ZERO); // Pendle has no last_vote
+    }
+
+    ///////////////////////////////////////////////
+    // HOST INPUT TO_JSON_VALUE TESTS
+    ///////////////////////////////////////////////
+
+    #[test]
+    fn test_host_input_to_json_value_correct_structure() {
+        let request = HostRequest {
+            chain_id: 1,
+            block_number: TEST_BLOCK,
+            epoch: None,
+            protocol: Some("curve".to_string()),
+            gauge_controller: None,
+            slots: None,
+            requests: vec![
+                RequestItem {
+                    kind: RequestKind::PointData,
+                    account: None,
+                    gauge: Some(address!("26f7786de3e6d9bd37fcf47be6f2bc455a21b74a")),
+                },
+            ],
+        };
+        let input = HostInput::from_request(request).unwrap();
+        let json = input.to_json_value(TEST_EPOCH);
+
+        assert_eq!(json["chain_id"], 1);
+        assert_eq!(json["block_number"], TEST_BLOCK);
+        assert_eq!(json["epoch"], TEST_EPOCH);
+        assert_eq!(json["protocol"], "curve");
+        assert!(json["gauge_controller"].is_string());
+        assert!(json["slots"].is_object());
+        assert!(json["requests"].is_array());
+    }
+
+    #[test]
+    fn test_host_input_to_json_value_slot_format() {
+        let request = HostRequest {
+            chain_id: 1,
+            block_number: TEST_BLOCK,
+            epoch: None,
+            protocol: Some("curve".to_string()),
+            gauge_controller: None,
+            slots: None,
+            requests: vec![],
+        };
+        let input = HostInput::from_request(request).unwrap();
+        let json = input.to_json_value(TEST_EPOCH);
+
+        // Slots should be hex formatted
+        let weight_slot = json["slots"]["weight_mapping_slot"].as_str().unwrap();
+        assert!(weight_slot.starts_with("0x"));
+    }
+
+    #[test]
+    fn test_host_input_to_json_value_request_format() {
+        let request = HostRequest {
+            chain_id: 1,
+            block_number: TEST_BLOCK,
+            epoch: None,
+            protocol: Some("curve".to_string()),
+            gauge_controller: None,
+            slots: None,
+            requests: vec![
+                RequestItem {
+                    kind: RequestKind::AccountData,
+                    account: Some(address!("fac2f11ba2577d5122dc1ec5301d35b16688251e")),
+                    gauge: Some(address!("26f7786de3e6d9bd37fcf47be6f2bc455a21b74a")),
+                },
+            ],
+        };
+        let input = HostInput::from_request(request).unwrap();
+        let json = input.to_json_value(TEST_EPOCH);
+
+        let requests = json["requests"].as_array().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0]["type"], "account_data");
+        assert!(requests[0]["account"].is_string());
+        assert!(requests[0]["gauge"].is_string());
+    }
+}
