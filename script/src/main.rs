@@ -118,7 +118,7 @@ async fn main() {
     };
     // Update host_input with resolved block number so toolkit gets the correct value
     host_input.block_number = Some(block_number);
-    println!("Using block number: {}", block_number);
+    println!("Using block number: {block_number}");
 
     // When using toolkit, use the toolkit's hardcoded slots instead of env/input slots.
     // This ensures the slots match what the toolkit used when generating proofs.
@@ -155,7 +155,7 @@ async fn main() {
         if let Ok(pk) = env::var("NETWORK_PRIVATE_KEY") {
             match NetworkSigner::local(&pk) {
                 Ok(signer) => println!("Network requester address: {:?}", signer.address()),
-                Err(e) => eprintln!("Warning: Could not parse NETWORK_PRIVATE_KEY: {}", e),
+                Err(e) => eprintln!("Warning: Could not parse NETWORK_PRIVATE_KEY: {e}"),
             }
         } else {
             eprintln!("Warning: NETWORK_PRIVATE_KEY not set");
@@ -229,8 +229,8 @@ async fn main() {
     stdin.write(&input);
 
     println!("Input prepared:");
-    println!("  Block: {}", block_number);
-    println!("  Epoch: {}", epoch);
+    println!("  Block: {block_number}");
+    println!("  Epoch: {epoch}");
     println!("  State root: {:?}", input.state_root);
     println!("  Point requests: {}", input.point_requests.len());
     for (i, req) in input.point_requests.iter().enumerate() {

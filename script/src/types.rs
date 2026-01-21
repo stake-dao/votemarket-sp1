@@ -78,9 +78,8 @@ impl HostInput {
             .or_else(|| protocol.gauge_controller())
             .ok_or_else(|| {
                 format!(
-                    "No gauge controller for protocol '{}'. \
-                     Set GAUGE_CONTROLLER env var or use a known protocol (curve, balancer, frax, fxn, pendle, yb)",
-                    protocol_name
+                    "No gauge controller for protocol '{protocol_name}'. \
+                     Set GAUGE_CONTROLLER env var or use a known protocol (curve, balancer, frax, fxn, pendle, yb)"
                 )
             })?;
 
@@ -100,10 +99,9 @@ impl HostInput {
                 // Try to use toolkit defaults
                 protocol.toolkit_slots().ok_or_else(|| {
                     format!(
-                        "Missing slot env vars and no toolkit defaults for protocol '{}'. \
+                        "Missing slot env vars and no toolkit defaults for protocol '{protocol_name}'. \
                          Set WEIGHT_MAPPING_SLOT, LAST_VOTE_MAPPING_SLOT, USER_SLOPE_MAPPING_SLOT \
-                         or use a protocol with toolkit defaults (curve, balancer, frax, fxn, pendle, yb)",
-                        protocol_name
+                         or use a protocol with toolkit defaults (curve, balancer, frax, fxn, pendle, yb)"
                     )
                 })?
             }
@@ -146,9 +144,8 @@ impl HostInput {
             .or_else(|| protocol.gauge_controller())
             .ok_or_else(|| {
                 format!(
-                    "No gauge controller for protocol '{}'. \
-                     Provide gauge_controller in JSON or use a known protocol (curve, balancer, frax, fxn, pendle, yb)",
-                    protocol_name
+                    "No gauge controller for protocol '{protocol_name}'. \
+                     Provide gauge_controller in JSON or use a known protocol (curve, balancer, frax, fxn, pendle, yb)"
                 )
             })?;
 
@@ -158,9 +155,8 @@ impl HostInput {
             .or_else(|| protocol.toolkit_slots())
             .ok_or_else(|| {
                 format!(
-                    "No slots for protocol '{}'. \
-                     Provide slots in JSON or use a known protocol (curve, balancer, frax, fxn, pendle, yb)",
-                    protocol_name
+                    "No slots for protocol '{protocol_name}'. \
+                     Provide slots in JSON or use a known protocol (curve, balancer, frax, fxn, pendle, yb)"
                 )
             })?;
 
@@ -180,7 +176,7 @@ impl HostInput {
     pub fn load() -> Result<Self, String> {
         if let Ok(path) = env::var("INPUT_JSON") {
             let contents = fs::read_to_string(&path)
-                .map_err(|err| format!("failed to read INPUT_JSON {}: {err}", path))?;
+                .map_err(|err| format!("failed to read INPUT_JSON {path}: {err}"))?;
             let request: HostRequest =
                 serde_json::from_str(&contents).map_err(|err| format!("invalid INPUT_JSON: {err}"))?;
             Self::from_request(request)

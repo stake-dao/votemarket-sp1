@@ -82,7 +82,7 @@ pub fn u256_to_hex_32(value: U256) -> String {
 }
 
 pub fn u256_to_hex(value: U256) -> String {
-    format!("0x{:x}", value)
+    format!("0x{value:x}")
 }
 
 ///////////////////////////////////////////////

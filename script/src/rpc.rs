@@ -83,7 +83,7 @@ async fn rpc_call<T: for<'de> Deserialize<'de>>(
         .map_err(|err| format!("RPC response read failed: {err}"))?;
 
     if !status.is_success() {
-        return Err(format!("RPC status error {}: {}", status, body));
+        return Err(format!("RPC status error {status}: {body}"));
     }
 
     let rpc_response: RpcResponse<T> =
@@ -113,7 +113,7 @@ pub async fn fetch_block_state_root(
     rpc_url: &str,
     block_number: u64,
 ) -> Result<(B256, u64), String> {
-    let block_number_hex = format!("0x{:x}", block_number);
+    let block_number_hex = format!("0x{block_number:x}");
     let block: BlockResponse = rpc_call(
         client,
         rpc_url,
@@ -135,7 +135,7 @@ pub async fn fetch_proofs(
     block_number: u64,
     slots: &[U256],
 ) -> Result<ProofResponse, String> {
-    let block_number_hex = format!("0x{:x}", block_number);
+    let block_number_hex = format!("0x{block_number:x}");
     let slot_hexes: Vec<String> = slots.iter().map(|slot| u256_to_hex_32(*slot)).collect();
 
     rpc_call(

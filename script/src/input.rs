@@ -243,7 +243,7 @@ pub fn build_input_from_toolkit(
 
                 let toolkit_proof = user_proofs
                     .get(&key)
-                    .ok_or_else(|| format!("missing user proof for {:?}", key))?;
+                    .ok_or_else(|| format!("missing user proof for {key:?}"))?;
 
                 let proofs = decode_rlp_proof_list(&toolkit_proof.storage_proof)?;
 
