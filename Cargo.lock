@@ -4605,6 +4605,7 @@ dependencies = [
  "alloy-trie 0.7.9",
  "eth_trie",
  "ethereum-types",
+ "hex",
  "serde",
  "sha3",
  "shared",
@@ -5313,6 +5314,7 @@ dependencies = [
  "alloy-primitives 0.8.14",
  "alloy-sol-types 0.8.14",
  "dotenvy",
+ "hex",
  "reqwest",
  "rlp",
  "serde",
@@ -5628,6 +5630,7 @@ dependencies = [
  "alloy-primitives 0.8.14",
  "alloy-rlp",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
