@@ -13,7 +13,6 @@ mod toolkit;
 mod types;
 
 use alloy_primitives::U256;
-use shared::Output;
 use sp1_sdk::{HashableKey, NetworkSigner, ProverClient, SP1Stdin};
 use std::{
     env,
@@ -22,7 +21,7 @@ use std::{
 };
 
 use config::{ProofKind, ProofSource, RunMode};
-use helpers::{parse_optional_bool_env, resolve_rpc_url};
+use helpers::{decode_abi_public_values, decode_hex_bytes, parse_optional_bool_env, resolve_rpc_url};
 use input::{build_input_from_rpc, build_input_from_toolkit, expand_requests};
 use proof::persist_proof;
 use rpc::{fetch_block_state_root, fetch_latest_block_number, fetch_proofs};
@@ -251,8 +250,11 @@ async fn main() {
                 .expect("Execution failed");
             println!("Execution successful!");
 
-            let mut public_values_clone = public_values.clone();
-            let output = public_values_clone.read::<Output>();
+            // Decode ABI-encoded public values (raw() returns hex string)
+            let raw_bytes = decode_hex_bytes(&public_values.raw())
+                .expect("Failed to decode hex public values");
+            let output = decode_abi_public_values(&raw_bytes)
+                .expect("Failed to decode public values");
 
             println!("Cycles: {}", report.total_instruction_count());
             println!("Output:");
@@ -292,8 +294,11 @@ async fn main() {
                 println!("Proof verification succeeded");
             }
 
-            let mut public_values_clone = proof.public_values.clone();
-            let output = public_values_clone.read::<Output>();
+            // Decode ABI-encoded public values (raw() returns hex string)
+            let raw_bytes = decode_hex_bytes(&proof.public_values.raw())
+                .expect("Failed to decode hex public values");
+            let output = decode_abi_public_values(&raw_bytes)
+                .expect("Failed to decode public values");
 
             println!("Proof generated!");
             println!("Output:");

@@ -1,10 +1,39 @@
 //! Encoding, parsing, and serde helper utilities.
 
 use alloy_primitives::{hex, Address, B256, U256};
+use alloy_sol_types::{sol, SolValue};
 use rlp::Rlp;
 use serde::Deserialize;
 use sha3::{Digest, Keccak256};
+use shared::{AccountResult as SharedAccountResult, Output, PointResult as SharedPointResult};
 use std::{env, str::FromStr};
+
+// Solidity-compatible types for ABI decoding.
+// These must match the types defined in the SP1 circuit's main.rs
+sol! {
+    struct PointResult {
+        address gauge;
+        uint256 epoch;
+        uint256 bias;
+    }
+
+    struct AccountResult {
+        address account;
+        address gauge;
+        uint256 epoch;
+        uint256 slope;
+        uint256 end;
+        uint256 lastVote;
+    }
+
+    /// Public values struct committed by the circuit.
+    struct PublicValues {
+        bytes32 stateRoot;
+        uint256 epoch;
+        PointResult[] pointResults;
+        AccountResult[] accountResults;
+    }
+}
 
 ///////////////////////////////////////////////
 // HASHING
@@ -240,4 +269,62 @@ where
 {
     let value = String::deserialize(deserializer)?;
     parse_u256(&value).map_err(serde::de::Error::custom)
+}
+
+///////////////////////////////////////////////
+// ABI DECODING (Public Values)
+///////////////////////////////////////////////
+
+/// Decode ABI-encoded public values from the SP1 circuit into an Output struct.
+///
+/// The circuit uses `PublicValues::abi_encode() + commit_slice()` to output data
+/// following SP1's recommended pattern from the project template.
+///
+/// Expected format: PublicValues struct (stateRoot, epoch, pointResults[], accountResults[])
+pub fn decode_abi_public_values(raw_bytes: &[u8]) -> Result<Output, String> {
+    let decoded = PublicValues::abi_decode(raw_bytes, true)
+        .map_err(|err| format!("ABI decode failed: {err}"))?;
+
+    // Convert epoch from U256 to u64
+    let epoch: u64 = decoded
+        .epoch
+        .try_into()
+        .map_err(|_| "epoch overflow: value exceeds u64 max")?;
+
+    // Convert Solidity types to shared Output types
+    let point_results: Vec<SharedPointResult> = decoded
+        .pointResults
+        .into_iter()
+        .map(|p| {
+            let epoch_val: u64 = p.epoch.try_into().expect("point epoch overflow");
+            SharedPointResult {
+                gauge: p.gauge,
+                epoch: epoch_val,
+                bias: p.bias,
+            }
+        })
+        .collect();
+
+    let account_results: Vec<SharedAccountResult> = decoded
+        .accountResults
+        .into_iter()
+        .map(|a| {
+            let epoch_val: u64 = a.epoch.try_into().expect("account epoch overflow");
+            SharedAccountResult {
+                account: a.account,
+                gauge: a.gauge,
+                epoch: epoch_val,
+                slope: a.slope,
+                end: a.end,
+                last_vote: a.lastVote,
+            }
+        })
+        .collect();
+
+    Ok(Output {
+        state_root: decoded.stateRoot,
+        epoch,
+        point_results,
+        account_results,
+    })
 }
