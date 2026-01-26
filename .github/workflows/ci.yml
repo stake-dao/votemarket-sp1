@@ -93,59 +93,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.88.0
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Cache cargo registry
+      - name: Cache Docker layers
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-guest-${{ hashFiles('**/Cargo.lock') }}
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ hashFiles('docker/Dockerfile') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-guest-
+            ${{ runner.os }}-buildx-
 
-      - name: Cache SP1 toolchain
-        id: cache-sp1
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.sp1
-            ~/.rustup/toolchains/succinct
-          key: ${{ runner.os }}-sp1-5.2.4-v3
-
-      - name: Install SP1 toolchain
-        if: steps.cache-sp1.outputs.cache-hit != 'true'
+      - name: Build and verify VKEY
         run: |
-          curl -L https://sp1.succinct.xyz | bash
-          ~/.sp1/bin/sp1up --version v5.2.4
-
-      - name: Add SP1 to PATH
-        run: echo "$HOME/.sp1/bin" >> $GITHUB_PATH
-
-      - name: Build guest circuit
-        working-directory: program
-        run: ~/.sp1/bin/cargo-prove prove build
-
-      - name: Verify VKEY
-        working-directory: script
-        timeout-minutes: 20
-        run: |
-          EXPECTED_VKEY=$(cat ../.vkey.prod | tr -d '[:space:]')
-          GENERATED_VKEY=$(VKEY_ONLY=true cargo run --release 2>&1 | tee /dev/stderr | grep "Program VKEY:" | awk '{print $3}')
-
-          echo "Expected VKEY:  $EXPECTED_VKEY"
-          echo "Generated VKEY: $GENERATED_VKEY"
-
-          if [ "$GENERATED_VKEY" != "$EXPECTED_VKEY" ]; then
-            echo ""
-            echo "::error::VKEY mismatch! The circuit code or dependencies have changed."
-            echo "If this change is intentional, update .vkey.prod and redeploy the on-chain verifier contract."
-            exit 1
-          fi
-
-          echo "VKEY verification passed!"
+          docker compose -f docker/docker-compose.yml build
+          docker compose -f docker/docker-compose.yml run --rm sp1 vkey-verify
