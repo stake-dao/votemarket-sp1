@@ -1,0 +1,18 @@
+{
+  "chain_id": 1,
+  "block_number": 24291359,
+  "epoch": 1769040000,
+  "protocol": "curve",
+  "requests": [
+    {
+      "type": "account_data",
+      "account": "0x52f541764e6e90eebc5c21ff570de0e2d63766b6",
+      "gauge": "0xc26f3c4f14e90649260a19896e27674ba188862e"
+    },
+    {
+      "type": "account_data",
+      "account": "0x989aeb4d175e16225e39e87d0d97a3360524ad80",
+      "gauge": "0x26f7786de3e6d9bd37fcf47be6f2bc455a21b74a"
+    }
+  ]
+}

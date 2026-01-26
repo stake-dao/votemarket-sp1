@@ -7,3 +7,9 @@
 
 # Docker
 .docker/
+
+# Input files directory
+script/input/*
+!script/input/input.json.example
+script/output/*
+!script/output/output.json.example

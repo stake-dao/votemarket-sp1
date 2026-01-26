@@ -10,11 +10,13 @@ Votemarket is a cross-chain incentive protocol that distributes rewards based on
 
 **The solution**: Verify MPT proofs off-chain in a ZK circuit, then submit a single ~300 byte proof that attests to hundreds of verified values.
 
-| Metric                | MPT (Before) | ZK (After) |
-| --------------------- | ------------ | ---------- |
-| Calldata per claim    | ~3KB         | ~10 bytes  |
-| Max claims per tx     | ~40          | 500+       |
-| Gas cost (100 claims) | ~5M gas      | ~400k gas  |
+| Users | Gauges | MPT Calldata | ZK (PLONK) | Improvement |
+| ----- | ------ | ------------ | ---------- | ----------- |
+| 1     | 1      | ~10 KB       | ~1.0 KB    | **10x**     |
+| 10    | 5      | ~100 KB      | ~3.3 KB    | **30x**     |
+| 50    | 10     | ~500 KB ❌   | ~11.5 KB   | **43x**     |
+| 100   | 20     | ~1 MB ❌     | ~22.5 KB   | **45x**     |
+| 200   | 30     | ~2 MB ❌     | ~44.5 KB   | **45x**     |
 
 For detailed technical documentation, see [SPEC.md](./SPEC.md).
 
@@ -22,15 +24,9 @@ For detailed technical documentation, see [SPEC.md](./SPEC.md).
 
 ### Prerequisites
 
-1. **Rust** (latest stable)
-2. **SP1 Toolchain**
-
-```bash
-curl -L https://sp1.succinct.xyz | bash
-sp1up
-```
-
-3. **Just** (command runner)
+1. **Docker** with Docker Compose
+2. **Just** (command runner)
+3. **Python 3.10+** (for the proof toolkit)
 
 ```bash
 # macOS
@@ -40,25 +36,56 @@ brew install just
 cargo install just
 ```
 
-4. **Python 3.10+** (for the proof toolkit)
+That's it! All Rust/SP1 toolchain is handled inside Docker.
 
 ### Installation
 
 ```bash
 git clone https://github.com/stake-dao/votemarket-sp1
 cd votemarket-sp1
-just build
-just build-guest    # Build the guest code
-just toolkit-setup  # Install Python dependencies
+cp script/.env.example script/.env  # Configure your RPC URL and network key
+just build                          # Build Docker image (first time only)
+just build-guest                    # Build the circuit
+just toolkit-setup                  # Install proof toolkit (generates input.json)
 ```
 
-### Build the Guest Circuit
+Edit `script/.env` with your Ethereum RPC URL and your Succinct Network private key.
+
+### Repository Structure
+
+```
+votemarket-sp1/
+├── program/    # Guest circuit (runs inside ZKVM)
+├── script/     # Host application (proof orchestration)
+├── shared/     # Shared types between guest and host
+├── output/     # Generated proof artifacts
+├── docker/     # Docker configuration for reproducible builds
+└── justfile    # Command runner recipes
+```
+
+## Quick Commands
+
+Run `just` or `just --list` to see all available commands.
+
+### User Commands (Docker-based, recommended)
 
 ```bash
-just build-guest
+# Build commands
+just build          # Build Docker image
+just build-guest    # Build the circuit
+just vkey           # Get verification key
+just vkey-verify    # Verify VKEY matches production
+just clean          # Clean Docker caches
+
+# Proof generation (requires input.json, env vars from .env)
+just mock ./input.json              # Test without real proof
+just prove ./input.json             # Generate PLONK proof
+just prove-compressed ./input.json  # Generate proof locally (no network)
 ```
 
-This compiles the guest code into a RISC-V ELF binary that SP1 can execute.
+## Usage
+
+All proof commands require an `input.json` file that specifies the proof parameters. See [Input JSON Format](#input-json-format) for the schema.
 
 ### Extract the Program VKEY
 
@@ -73,138 +100,7 @@ just vkey
 
 **Note**: Any change to `program/src/main.rs`, its dependencies, or the Rust compiler version will produce a different VKEY on rebuild and will require redeploying the contract.
 
-## Repository Structure
-
-```
-votemarket-sp1/
-├── program/    # Guest circuit (runs inside ZKVM)
-├── script/     # Host application (proof orchestration)
-├── shared/     # Shared types between guest and host
-├── output/     # Generated proof artifacts
-└── justfile    # Command runner recipes
-```
-
-## Quick Commands
-
-Run `just` or `just --list` to see all available commands.
-
-### Common Workflows
-
-```bash
-# Development
-just build-guest    # Build the circuit
-just vkey           # Get verification key
-just mock           # Test without real proof
-
-# Production
-just prove          # Generate PLONK proof (recommended)
-just prove-groth16  # Alternative: Groth16 proof
-
-# External data sources
-ETHEREUM_MAINNET_RPC_URL=https://... just prove-rpc
-just prove-json ./input.json
-
-# Testing & quality
-just test           # Run all tests
-just lint           # Check code quality
-
-# Help
-just env-help       # Show environment variables
-just proof-kinds    # Explain proof formats
-```
-
-## Usage
-
-### Mock Mode (Development)
-
-```bash
-just mock
-```
-
-Executes the guest logic natively without generating a ZK proof. Use for development and testing.
-
 ### Generate a Real Proof
-
-```bash
-just prove
-```
-
-Generates a PLONK proof that can be verified on-chain. The system uses the [Succinct Prover Network](https://docs.succinct.xyz/docs/sp1/prover-network/quickstart) to generate proofs. This requires:
-
-1. **Generate a requester key**: Create an Ethereum-compatible private key
-2. **Fund your account**: Acquire PROVE tokens and deposit them at https://network.succinct.xyz/
-3. **Set the environment variable**: `export NETWORK_PRIVATE_KEY=0x...`
-
-```bash
-# Generate PLONK proof using the network
-NETWORK_PRIVATE_KEY=0x... just prove
-```
-
-Note: Core and compressed proofs can be generated locally without the network.
-
-### Using the Proof Toolkit
-
-```bash
-# Setup (one-time)
-just toolkit-setup
-source .venv/bin/activate
-
-# Generate proof with toolkit as data source
-ETHEREUM_MAINNET_RPC_URL=https://... just prove-toolkit
-```
-
-### Output Artifacts
-
-After running in proof mode, artifacts are saved to `output/`:
-
-- `proof.bin`: Binary-serialized proof bundle
-- `proof.json`: Human-readable proof data with `proof_bytes` and `public_values_raw` for on-chain submission
-
-## Configuration
-
-### Environment Variables
-
-#### Core Settings
-
-| Variable           | Description                              | Default          |
-| ------------------ | ---------------------------------------- | ---------------- |
-| `RUN_MODE`         | `mock` or `prove`                        | `mock`           |
-| `PROOF_KIND`       | `core`, `compressed`, `plonk`, `groth16` | `plonk`          |
-| `VERIFY_PROOF`     | Verify proof locally after generation    | `false`          |
-| `PROOF_SOURCE`     | `rpc` or `toolkit`                       | `toolkit`        |
-| `INPUT_JSON`       | Path to input JSON file (overrides env)  | -                |
-| `PROOF_OUTPUT_DIR` | Directory for proof output files         | `script/output/` |
-
-#### Blockchain Settings
-
-| Variable                   | Description                                        | Default    |
-| -------------------------- | -------------------------------------------------- | ---------- |
-| `ETHEREUM_MAINNET_RPC_URL` | Ethereum RPC endpoint                              | Required   |
-| `CHAIN_ID`                 | Chain ID for RPC calls                             | `1`        |
-| `BLOCK_NUMBER`             | Block number for proofs                            | Latest     |
-| `EPOCH`                    | Override epoch timestamp                           | From block |
-| `PROTOCOL`                 | `curve`, `balancer`, `frax`, `fxn`, `pendle`, `yb` | `curve`    |
-
-#### Contract Parameters
-
-| Variable                  | Description                       | Default                         |
-| ------------------------- | --------------------------------- | ------------------------------- |
-| `GAUGE`                   | Gauge address                     | Required                        |
-| `ACCOUNT`                 | User account address              | Required                        |
-| `GAUGE_CONTROLLER`        | GaugeController address           | Protocol default (if available) |
-| `WEIGHT_MAPPING_SLOT`     | Storage slot for points_weight    | Protocol default (if available) |
-| `LAST_VOTE_MAPPING_SLOT`  | Storage slot for last_user_vote   | Protocol default (if available) |
-| `USER_SLOPE_MAPPING_SLOT` | Storage slot for vote_user_slopes | Protocol default (if available) |
-
-**Note**: `GAUGE_CONTROLLER` and storage slot variables are optional for known protocols (`curve`, `balancer`, `frax`, `fxn`, `pendle`, `yb`). The system uses built-in defaults for these protocols.
-
-#### Prover Network
-
-| Variable              | Description                             | Default                    |
-| --------------------- | --------------------------------------- | -------------------------- |
-| `NETWORK_PRIVATE_KEY` | Private key for Succinct Prover Network | Required for PLONK/Groth16 |
-
-### Succinct Prover Network
 
 For PLONK and Groth16 proofs, the system uses the [Succinct Prover Network](https://docs.succinct.xyz/docs/sp1/prover-network/quickstart). This is required because these proof types need GPU acceleration.
 
@@ -214,17 +110,10 @@ For PLONK and Groth16 proofs, the system uses the [Succinct Prover Network](http
 2. **Fund your account**: Acquire PROVE tokens and deposit them at https://network.succinct.xyz/
 3. **Set the environment variable**: `export NETWORK_PRIVATE_KEY=0x...`
 
-```bash
-# Generate PLONK proof using the network
-NETWORK_PRIVATE_KEY=0x... just prove
+> [!TIP]
+> Follow this detailled guide [here](https://docs.succinct.xyz/docs/sp1/prover-network/quickstart)
 
-# Generate compressed proof locally (no network needed)
-just prove-compressed
-```
-
-Core and compressed proofs can be generated locally without the network.
-
-### Input JSON Format
+#### Input JSON Format
 
 For known protocols, `gauge_controller` is optional (auto-detected from `protocol`).
 
@@ -246,6 +135,30 @@ For known protocols, `gauge_controller` is optional (auto-detected from `protoco
 }
 ```
 
+#### Output Artifacts
+
+After running in proof mode, artifacts are saved to `script/output/`:
+
+- `proof.bin`: Binary-serialized proof bundle
+- `proof.json`: Human-readable proof data with `proof_bytes` and `public_values_raw` for on-chain submission
+
+## Configuration
+
+### Docker Mode
+
+For Docker-based commands, proof parameters are provided via `input.json`. Environment variables are loaded from `script/.env`:
+
+```bash
+# script/.env
+ETHEREUM_MAINNET_RPC_URL=https://eth-mainnet.g.alchemy.com/v2/...
+NETWORK_PRIVATE_KEY=0x...  # Only needed for PLONK/Groth16 proofs
+```
+
+| Variable                   | Description                             | Required for         |
+| -------------------------- | --------------------------------------- | -------------------- |
+| `ETHEREUM_MAINNET_RPC_URL` | Ethereum RPC endpoint                   | All proof commands   |
+| `NETWORK_PRIVATE_KEY`      | Private key for Succinct Prover Network | PLONK/Groth16 proofs |
+
 ## Proof Modes
 
 | Mode         | On-chain Verifiable | Use Case       |
@@ -257,14 +170,64 @@ For known protocols, `gauge_controller` is optional (auto-detected from `protoco
 
 **Use `PROOF_KIND=plonk` for production.**
 
-## Testing
+<details>
+
+<summary>Contributors Section</summary>
+
+## For Contributors
+
+If you want to contribute, you'll need additional tools:
+
+- Rust (see `rust-toolchain.toml` for version)
+- SP1 Toolchain (`sp1up`)
 
 ```bash
-just test           # Run all tests
-just test-guest     # Guest circuit tests only
-just test-script    # Script tests only
-just mock           # Integration test
+# Install SP1 toolchain
+curl -L https://sp1.succinct.xyz | bash
+sp1up
 ```
+
+Development commands run natively (without Docker) for faster iteration:
+
+```bash
+just dev-build        # Build workspace
+just dev-build-guest  # Build circuit (may differ from CI!)
+just dev-test         # Run all tests
+just dev-lint         # Run clippy
+just dev-fmt          # Format code
+```
+
+> [!WARNING]
+> `just dev-build-guest` may produce a different VKEY than CI due to environment differences. Always use `just build-guest` (Docker) for reproducible builds.
+
+### Testing
+
+```bash
+# Integration test (Docker)
+just mock ./input.json
+
+# Unit tests (for contributors)
+just dev-test
+just dev-test-guest
+just dev-test-script
+```
+
+### Toolkit Setup
+
+The toolkit allows fetching proof data from RPC endpoints:
+
+```bash
+just toolkit-setup
+source .venv/bin/activate
+
+# Generate proof with toolkit as data source (native mode)
+ETHEREUM_MAINNET_RPC_URL=https://... \
+GAUGE=0x... \
+ACCOUNT=0x... \
+just dev-prove-toolkit
+```
+
+</details>
 
 ## Resources
 
