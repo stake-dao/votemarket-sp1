@@ -2,7 +2,8 @@
 /program/elf/
 .DS_Store
 .env
-script/input
-script/output
 .claude/
 .venv/
+
+# Docker
+.docker/
