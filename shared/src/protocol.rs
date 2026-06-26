@@ -191,10 +191,14 @@ pub fn derive_account_slots(protocol: Protocol, account: Address, gauge: Address
         .find(|s| s.label == "user_slope")
         .expect("user_slope slot always present")
         .slot;
-    // Mirror the host: first match of user_end OR user_bias.
+    // `end` is the vote-expiry slot. Prefer the explicit `user_end` label; fall back
+    // to `user_bias` only for protocols that expose no `user_end` (Pendle). Yb has
+    // both (`user_bias` at slope+1, `user_end` at slope+3), so a plain first-match
+    // would wrongly pick `user_bias` as `end`.
     let end = slots
         .iter()
-        .find(|s| s.label == "user_end" || s.label == "user_bias")
+        .find(|s| s.label == "user_end")
+        .or_else(|| slots.iter().find(|s| s.label == "user_bias"))
         .expect("user_end/user_bias slot always present")
         .slot;
     let last_vote = slots
@@ -433,12 +437,14 @@ mod tests {
     }
 
     #[test]
-    fn test_derive_account_slots_yb_end_is_first_match() {
-        // Yb slot Vec order is [last_vote, user_slope, user_bias, user_end]; the
-        // host selects the FIRST of (user_end|user_bias) = user_bias = slope + 1.
-        // This quirk is preserved for byte-for-byte parity.
+    fn test_derive_account_slots_yb_end_is_user_end() {
+        // Yb's VotedSlope struct is { slope(+0), bias(+1), power(+2), end(+3) } on the
+        // on-chain gauge controller (0x1Be14811A3a06F6aF4fA64310a636e1Df04c1c21), so the
+        // vote-expiry `end` lives at slope+3 (user_end), not slope+1 (user_bias). The
+        // selection must prefer user_end over the earlier user_bias entry.
         let s = derive_account_slots(Protocol::Yb, TEST_ACCOUNT, TEST_GAUGE);
-        assert_eq!(s.end, s.slope + U256::from(1));
+        assert_eq!(s.end, s.slope + U256::from(3));
+        assert_ne!(s.end, s.slope + U256::from(1)); // not the bias slot
         assert!(s.last_vote.is_some());
     }
 
