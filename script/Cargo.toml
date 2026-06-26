@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-sp1-sdk = { version = "=5.2.4", default-features = false, features = [
+sp1-sdk = { version = "=6.3.0", default-features = false, features = [
     "network",
 ] }
 shared = { path = "../shared" }
