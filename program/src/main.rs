@@ -17,6 +17,7 @@ use alloy_sol_types::SolValue;
 use eth_trie::{EthTrie, MemoryDB, Trie};
 use ethereum_types::H256;
 use sha3::{Digest, Keccak256};
+use shared::protocol::{derive_account_slots, derive_point_slot, Protocol};
 #[cfg(target_os = "zkvm")]
 use shared::Input;
 use shared::{
@@ -120,12 +121,17 @@ fn process_point_requests(
     requests
         .iter()
         .map(|req| {
+            // Reject unknown protocol ids (fail-closed: panic => unprovable proof).
+            let protocol = Protocol::try_from(req.protocol_id)
+                .unwrap_or_else(|e| panic!("invalid protocol_id: {e}"));
+
             // Verify account proof to get storage root
             let storage_root =
                 verify_account_proof(state_root, req.gauge_controller, &req.account_proof);
 
-            // Verify storage proof to get bias value
-            let bias = verify_storage_proof(&storage_root, req.bias_slot, &req.bias_proof);
+            // Derive the canonical bias slot in-circuit and verify the value lives there.
+            let bias_slot = derive_point_slot(protocol, req.gauge, epoch);
+            let bias = verify_storage_proof(&storage_root, bias_slot, &req.bias_proof);
 
             SharedPointResult {
                 gauge: req.gauge,
@@ -145,18 +151,30 @@ fn process_account_requests(
     requests
         .iter()
         .map(|req| {
+            // Reject unknown protocol ids (fail-closed: panic => unprovable proof).
+            let protocol = Protocol::try_from(req.protocol_id)
+                .unwrap_or_else(|e| panic!("invalid protocol_id: {e}"));
+
             // Verify account proof to get storage root
             let storage_root =
                 verify_account_proof(state_root, req.gauge_controller, &req.account_proof);
 
-            // Verify storage proof to get the slope and end values
-            let slope = verify_storage_proof(&storage_root, req.slope_slot, &req.slope_proof);
-            let end = verify_storage_proof(&storage_root, req.end_slot, &req.end_proof);
+            // Derive the canonical slots in-circuit from (protocol, account, gauge).
+            let slots = derive_account_slots(protocol, req.account, req.gauge);
 
-            // Verify last_vote proof if present (not present for Pendle)
-            let last_vote = match (&req.last_vote_slot, &req.last_vote_proof) {
+            // Verify storage proof to get the slope and end values
+            let slope = verify_storage_proof(&storage_root, slots.slope, &req.slope_proof);
+            let end = verify_storage_proof(&storage_root, slots.end, &req.end_proof);
+
+            // Verify last_vote. Fail-closed: every protocol except Pendle has a
+            // last_vote slot, so its proof is mandatory. Accepting a missing proof
+            // would let a prover under-report last_vote as zero without proving the
+            // storage value. Only Pendle (no last_user_vote mapping) commits zero.
+            let last_vote = match (&slots.last_vote, &req.last_vote_proof) {
                 (Some(slot), Some(proof)) => verify_storage_proof(&storage_root, *slot, proof),
-                _ => U256::ZERO,
+                (None, None) => U256::ZERO,
+                (Some(_), None) => panic!("missing last_vote_proof for non-Pendle protocol"),
+                (None, Some(_)) => panic!("unexpected last_vote_proof for Pendle protocol"),
             };
 
             SharedAccountResult {
@@ -239,6 +257,7 @@ fn keccak256(data: &[u8]) -> [u8; 32] {
 mod tests {
     use super::*;
     use alloy_rlp::Encodable;
+    use alloy_sol_types::SolValue;
     use eth_trie::{EthTrie, MemoryDB, Trie};
 
     // Known keccak256 hashes
@@ -602,19 +621,19 @@ mod tests {
         let gauge = TEST_GAUGE.parse::<Address>().unwrap();
         let gauge_controller = TEST_ACCOUNT.parse::<Address>().unwrap();
         let bias_value = U256::from(1000u64);
-        let bias_slot = U256::from(5u64);
+        let protocol = Protocol::Curve;
+        // Store the value at the canonical derived slot; the guest recomputes it.
+        let bias_slot = derive_point_slot(protocol, gauge, TEST_EPOCH);
 
-        // Create storage proof for bias
         let (storage_root, bias_proof) = create_storage_trie_proof(bias_slot, bias_value);
-        // Create account proof with storage root
         let (state_root, account_proof) = create_account_trie_proof(gauge_controller, storage_root);
 
         let request = PointRequest {
+            protocol_id: protocol.as_u8(),
             gauge,
             gauge_controller,
             account_proof,
             bias_proof,
-            bias_slot,
         };
 
         let results = process_point_requests(&state_root, TEST_EPOCH, &[request]);
@@ -630,23 +649,25 @@ mod tests {
         let gauge = TEST_GAUGE.parse::<Address>().unwrap();
         let gauge_controller = TEST_ACCOUNT.parse::<Address>().unwrap();
         let bias_value = U256::from(500u64);
-        let bias_slot = U256::from(10u64);
         let custom_epoch = 1234567890u64;
+        let protocol = Protocol::Balancer;
+        let bias_slot = derive_point_slot(protocol, gauge, custom_epoch);
 
         let (storage_root, bias_proof) = create_storage_trie_proof(bias_slot, bias_value);
         let (state_root, account_proof) = create_account_trie_proof(gauge_controller, storage_root);
 
         let request = PointRequest {
+            protocol_id: protocol.as_u8(),
             gauge,
             gauge_controller,
             account_proof,
             bias_proof,
-            bias_slot,
         };
 
         let results = process_point_requests(&state_root, custom_epoch, &[request]);
 
         assert_eq!(results[0].epoch, custom_epoch);
+        assert_eq!(results[0].bias, bias_value);
     }
 
     // =========================================================================
@@ -673,17 +694,17 @@ mod tests {
         let end_value = U256::from(2000000000u64);
         let last_vote_value = U256::from(1730000000u64);
 
-        let slope_slot = U256::from(1u64);
-        let end_slot = U256::from(2u64);
-        let last_vote_slot = U256::from(3u64);
+        let protocol = Protocol::Curve;
+        let slots = derive_account_slots(protocol, account, gauge);
+        let last_vote_slot = slots.last_vote.expect("curve has last_vote");
 
-        // Create a trie with all three values
+        // Create a trie with all three values at their canonical derived slots.
         let memdb = Arc::new(MemoryDB::new(true));
         let mut trie = EthTrie::new(memdb.clone());
 
         for (slot, value) in [
-            (slope_slot, slope_value),
-            (end_slot, end_value),
+            (slots.slope, slope_value),
+            (slots.end, end_value),
             (last_vote_slot, last_vote_value),
         ] {
             let key = keccak256(&slot.to_be_bytes::<32>());
@@ -694,10 +715,10 @@ mod tests {
 
         let storage_root = B256::from(trie.root_hash().unwrap().0);
         let slope_proof = trie
-            .get_proof(&keccak256(&slope_slot.to_be_bytes::<32>()))
+            .get_proof(&keccak256(&slots.slope.to_be_bytes::<32>()))
             .unwrap();
         let end_proof = trie
-            .get_proof(&keccak256(&end_slot.to_be_bytes::<32>()))
+            .get_proof(&keccak256(&slots.end.to_be_bytes::<32>()))
             .unwrap();
         let last_vote_proof = trie
             .get_proof(&keccak256(&last_vote_slot.to_be_bytes::<32>()))
@@ -706,6 +727,7 @@ mod tests {
         let (state_root, account_proof) = create_account_trie_proof(gauge_controller, storage_root);
 
         let request = AccountRequest {
+            protocol_id: protocol.as_u8(),
             account,
             gauge,
             gauge_controller,
@@ -713,9 +735,6 @@ mod tests {
             slope_proof,
             end_proof,
             last_vote_proof: Some(last_vote_proof),
-            slope_slot,
-            end_slot,
-            last_vote_slot: Some(last_vote_slot),
         };
 
         let results = process_account_requests(&state_root, TEST_EPOCH, &[request]);
@@ -735,14 +754,16 @@ mod tests {
         let slope_value = U256::from(200u64);
         let end_value = U256::from(3000000000u64);
 
-        let slope_slot = U256::from(10u64);
-        let end_slot = U256::from(11u64);
+        // Pendle has no last_user_vote mapping, so the guest derives None.
+        let protocol = Protocol::Pendle;
+        let slots = derive_account_slots(protocol, account, gauge);
+        assert!(slots.last_vote.is_none());
 
         // Create a trie with slope and end values only
         let memdb = Arc::new(MemoryDB::new(true));
         let mut trie = EthTrie::new(memdb.clone());
 
-        for (slot, value) in [(slope_slot, slope_value), (end_slot, end_value)] {
+        for (slot, value) in [(slots.slope, slope_value), (slots.end, end_value)] {
             let key = keccak256(&slot.to_be_bytes::<32>());
             let mut rlp_value = Vec::new();
             value.encode(&mut rlp_value);
@@ -751,15 +772,16 @@ mod tests {
 
         let storage_root = B256::from(trie.root_hash().unwrap().0);
         let slope_proof = trie
-            .get_proof(&keccak256(&slope_slot.to_be_bytes::<32>()))
+            .get_proof(&keccak256(&slots.slope.to_be_bytes::<32>()))
             .unwrap();
         let end_proof = trie
-            .get_proof(&keccak256(&end_slot.to_be_bytes::<32>()))
+            .get_proof(&keccak256(&slots.end.to_be_bytes::<32>()))
             .unwrap();
 
         let (state_root, account_proof) = create_account_trie_proof(gauge_controller, storage_root);
 
         let request = AccountRequest {
+            protocol_id: protocol.as_u8(),
             account,
             gauge,
             gauge_controller,
@@ -767,14 +789,12 @@ mod tests {
             slope_proof,
             end_proof,
             last_vote_proof: None,
-            slope_slot,
-            end_slot,
-            last_vote_slot: None,
         };
 
         let results = process_account_requests(&state_root, TEST_EPOCH, &[request]);
 
         assert_eq!(results.len(), 1);
+        assert_eq!(results[0].slope, slope_value);
         assert_eq!(results[0].last_vote, U256::ZERO);
     }
 
@@ -787,13 +807,19 @@ mod tests {
 
         let slope_value = U256::from(50u64);
         let end_value = U256::from(1500000000u64);
-        let slope_slot = U256::from(20u64);
-        let end_slot = U256::from(21u64);
+        let last_vote_value = U256::from(1700000000u64);
+        let protocol = Protocol::Balancer;
+        let slots = derive_account_slots(protocol, account, gauge);
 
         let memdb = Arc::new(MemoryDB::new(true));
         let mut trie = EthTrie::new(memdb.clone());
 
-        for (slot, value) in [(slope_slot, slope_value), (end_slot, end_value)] {
+        // Balancer has a last_vote slot, so its proof is mandatory (fail-closed).
+        for (slot, value) in [
+            (slots.slope, slope_value),
+            (slots.end, end_value),
+            (slots.last_vote.unwrap(), last_vote_value),
+        ] {
             let key = keccak256(&slot.to_be_bytes::<32>());
             let mut rlp_value = Vec::new();
             value.encode(&mut rlp_value);
@@ -802,25 +828,26 @@ mod tests {
 
         let storage_root = B256::from(trie.root_hash().unwrap().0);
         let slope_proof = trie
-            .get_proof(&keccak256(&slope_slot.to_be_bytes::<32>()))
+            .get_proof(&keccak256(&slots.slope.to_be_bytes::<32>()))
             .unwrap();
         let end_proof = trie
-            .get_proof(&keccak256(&end_slot.to_be_bytes::<32>()))
+            .get_proof(&keccak256(&slots.end.to_be_bytes::<32>()))
+            .unwrap();
+        let last_vote_proof = trie
+            .get_proof(&keccak256(&slots.last_vote.unwrap().to_be_bytes::<32>()))
             .unwrap();
 
         let (state_root, account_proof) = create_account_trie_proof(gauge_controller, storage_root);
 
         let request = AccountRequest {
+            protocol_id: protocol.as_u8(),
             account,
             gauge,
             gauge_controller,
             account_proof,
             slope_proof,
             end_proof,
-            last_vote_proof: None,
-            slope_slot,
-            end_slot,
-            last_vote_slot: None,
+            last_vote_proof: Some(last_vote_proof),
         };
 
         let results = process_account_requests(&state_root, custom_epoch, &[request]);
@@ -829,5 +856,222 @@ mod tests {
         assert_eq!(results[0].account, account);
         assert_eq!(results[0].gauge, gauge);
         assert_eq!(results[0].epoch, custom_epoch);
+    }
+
+    // =========================================================================
+    // in-circuit slot-derivation security tests
+    // =========================================================================
+
+    /// Build a point request whose bias value lives at `stored_slot`, but is
+    /// submitted with `protocol`/`gauge`. Used to test label binding.
+    fn point_request_at_slot(
+        protocol: Protocol,
+        gauge: Address,
+        gauge_controller: Address,
+        stored_slot: U256,
+        bias_value: U256,
+    ) -> (B256, PointRequest) {
+        let (storage_root, bias_proof) = create_storage_trie_proof(stored_slot, bias_value);
+        let (state_root, account_proof) = create_account_trie_proof(gauge_controller, storage_root);
+        (
+            state_root,
+            PointRequest {
+                protocol_id: protocol.as_u8(),
+                gauge,
+                gauge_controller,
+                account_proof,
+                bias_proof,
+            },
+        )
+    }
+
+    // Label binding (cases a/e/b): a storage proof valid for one (label) cannot be
+    // relabeled to forge a value under another. The guest derives the slot from the
+    // submitted label, so the proof (covering the original slot) becomes a valid
+    // *exclusion* proof for the derived slot => the forged value never surfaces
+    // (it reads as 0). This is the core slot-binding property.
+
+    // (a) bias proof for gauge A relabeled as gauge B: yields 0, not the planted value.
+    #[test]
+    fn test_adversarial_bias_gauge_relabel_yields_zero_not_forged() {
+        let gauge_a = TEST_GAUGE.parse::<Address>().unwrap();
+        let gauge_b = Address::repeat_byte(0xbb);
+        let gc = TEST_ACCOUNT.parse::<Address>().unwrap();
+        let slot_a = derive_point_slot(Protocol::Curve, gauge_a, TEST_EPOCH);
+        let (state_root, req) =
+            point_request_at_slot(Protocol::Curve, gauge_b, gc, slot_a, U256::from(999u64));
+        let results = process_point_requests(&state_root, TEST_EPOCH, &[req]);
+        assert_ne!(
+            results[0].bias,
+            U256::from(999u64),
+            "relabel must not forge"
+        );
+        assert_eq!(results[0].bias, U256::ZERO);
+    }
+
+    // (e) value at Curve's slot submitted under Balancer: different formula => 0.
+    #[test]
+    fn test_adversarial_cross_protocol_relabel_yields_zero() {
+        let gauge = TEST_GAUGE.parse::<Address>().unwrap();
+        let gc = TEST_ACCOUNT.parse::<Address>().unwrap();
+        let curve_slot = derive_point_slot(Protocol::Curve, gauge, TEST_EPOCH);
+        // Sanity: the two protocols derive different slots for the same gauge/epoch.
+        assert_ne!(
+            curve_slot,
+            derive_point_slot(Protocol::Balancer, gauge, TEST_EPOCH)
+        );
+        let (state_root, req) =
+            point_request_at_slot(Protocol::Balancer, gauge, gc, curve_slot, U256::from(7u64));
+        let results = process_point_requests(&state_root, TEST_EPOCH, &[req]);
+        assert_eq!(results[0].bias, U256::ZERO);
+    }
+
+    // (b) account slope/end proof for account X relabeled as account Y: yields 0.
+    #[test]
+    fn test_adversarial_account_relabel_yields_zero() {
+        let account_x = TEST_ACCOUNT.parse::<Address>().unwrap();
+        let account_y = Address::repeat_byte(0x77);
+        let gauge = TEST_GAUGE.parse::<Address>().unwrap();
+        let gc = Address::repeat_byte(0x11);
+
+        // Store slope/end at account X's canonical slots.
+        let slots_x = derive_account_slots(Protocol::Curve, account_x, gauge);
+        let memdb = Arc::new(MemoryDB::new(true));
+        let mut trie = EthTrie::new(memdb.clone());
+        for (slot, value) in [
+            (slots_x.slope, U256::from(5u64)),
+            (slots_x.end, U256::from(6u64)),
+        ] {
+            let key = keccak256(&slot.to_be_bytes::<32>());
+            let mut rlp_value = Vec::new();
+            value.encode(&mut rlp_value);
+            trie.insert(&key, &rlp_value).unwrap();
+        }
+        let storage_root = B256::from(trie.root_hash().unwrap().0);
+        let slope_proof = trie
+            .get_proof(&keccak256(&slots_x.slope.to_be_bytes::<32>()))
+            .unwrap();
+        let end_proof = trie
+            .get_proof(&keccak256(&slots_x.end.to_be_bytes::<32>()))
+            .unwrap();
+        // Curve has a last_vote slot, so its proof is mandatory (fail-closed). Supply
+        // an exclusion proof so the test exercises the relabel binding, not the bypass.
+        let last_vote_proof = trie
+            .get_proof(&keccak256(&slots_x.last_vote.unwrap().to_be_bytes::<32>()))
+            .unwrap();
+        let (state_root, account_proof) = create_account_trie_proof(gc, storage_root);
+
+        // Submit labeled as account Y => guest derives Y's slots => exclusion => 0.
+        let req = AccountRequest {
+            protocol_id: Protocol::Curve.as_u8(),
+            account: account_y,
+            gauge,
+            gauge_controller: gc,
+            account_proof,
+            slope_proof,
+            end_proof,
+            last_vote_proof: Some(last_vote_proof),
+        };
+        let results = process_account_requests(&state_root, TEST_EPOCH, &[req]);
+        assert_eq!(results[0].slope, U256::ZERO);
+        assert_eq!(results[0].end, U256::ZERO);
+        assert_eq!(results[0].last_vote, U256::ZERO);
+    }
+
+    // Fail-closed: omitting the last_vote proof for a non-Pendle protocol must panic
+    // rather than silently committing last_vote = 0 (soundness gap).
+    #[test]
+    #[should_panic(expected = "missing last_vote_proof for non-Pendle protocol")]
+    fn test_missing_last_vote_proof_non_pendle_panics() {
+        let account = TEST_ACCOUNT.parse::<Address>().unwrap();
+        let gauge = TEST_GAUGE.parse::<Address>().unwrap();
+        let gc = Address::repeat_byte(0x11);
+        let slots = derive_account_slots(Protocol::Curve, account, gauge);
+        let memdb = Arc::new(MemoryDB::new(true));
+        let mut trie = EthTrie::new(memdb.clone());
+        for (slot, value) in [
+            (slots.slope, U256::from(5u64)),
+            (slots.end, U256::from(6u64)),
+        ] {
+            let key = keccak256(&slot.to_be_bytes::<32>());
+            let mut rlp_value = Vec::new();
+            value.encode(&mut rlp_value);
+            trie.insert(&key, &rlp_value).unwrap();
+        }
+        let storage_root = B256::from(trie.root_hash().unwrap().0);
+        let slope_proof = trie
+            .get_proof(&keccak256(&slots.slope.to_be_bytes::<32>()))
+            .unwrap();
+        let end_proof = trie
+            .get_proof(&keccak256(&slots.end.to_be_bytes::<32>()))
+            .unwrap();
+        let (state_root, account_proof) = create_account_trie_proof(gc, storage_root);
+        let req = AccountRequest {
+            protocol_id: Protocol::Curve.as_u8(),
+            account,
+            gauge,
+            gauge_controller: gc,
+            account_proof,
+            slope_proof,
+            end_proof,
+            last_vote_proof: None, // Curve requires it => must panic
+        };
+        let _ = process_account_requests(&state_root, TEST_EPOCH, &[req]);
+    }
+
+    // Unknown protocol_id is rejected (fail-closed panic).
+    #[test]
+    #[should_panic(expected = "invalid protocol_id")]
+    fn test_unknown_protocol_id_panics() {
+        let gauge = TEST_GAUGE.parse::<Address>().unwrap();
+        let gc = TEST_ACCOUNT.parse::<Address>().unwrap();
+        let (storage_root, bias_proof) =
+            create_storage_trie_proof(U256::from(1u64), U256::from(1u64));
+        let (state_root, account_proof) = create_account_trie_proof(gc, storage_root);
+        let req = PointRequest {
+            protocol_id: 99, // not a known protocol
+            gauge,
+            gauge_controller: gc,
+            account_proof,
+            bias_proof,
+        };
+        let _ = process_point_requests(&state_root, TEST_EPOCH, &[req]);
+    }
+
+    // PublicValues ABI layout must stay byte-identical (no ZKVerifier.sol change).
+    // The schema is pinned by the sol! macro; this asserts the encoded selector-free
+    // tuple round-trips for the canonical shape (stateRoot, epoch, point[], account[]).
+    #[test]
+    fn test_public_values_abi_unchanged() {
+        const GOLDEN_PUBLIC_VALUES_HEX: &str = "0000000000000000000000000000000000000000000000000000000000000020abababababababababababababababababababababababababababababababab00000000000000000000000000000000000000000000000000000000672c030000000000000000000000000000000000000000000000000000000000000000800000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000100000000000000000000000026f7786de3e6d9bd37fcf47be6f2bc455a21b74a00000000000000000000000000000000000000000000000000000000672c0300000000000000000000000000000000000000000000000000000000000000007b0000000000000000000000000000000000000000000000000000000000000001000000000000000000000000fac2f11ba2577d5122dc1ec5301d35b16688251e00000000000000000000000026f7786de3e6d9bd37fcf47be6f2bc455a21b74a00000000000000000000000000000000000000000000000000000000672c0300000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000003";
+        let pv = PublicValues {
+            stateRoot: B256::repeat_byte(0xab),
+            epoch: U256::from(TEST_EPOCH),
+            pointResults: vec![PointResult {
+                gauge: TEST_GAUGE.parse().unwrap(),
+                epoch: U256::from(TEST_EPOCH),
+                bias: U256::from(123u64),
+            }],
+            accountResults: vec![AccountResult {
+                account: TEST_ACCOUNT.parse().unwrap(),
+                gauge: TEST_GAUGE.parse().unwrap(),
+                epoch: U256::from(TEST_EPOCH),
+                slope: U256::from(1u64),
+                end: U256::from(2u64),
+                lastVote: U256::from(3u64),
+            }],
+        };
+        let encoded = PublicValues::abi_encode(&pv);
+        // Golden byte fixture: pins the on-wire ABI layout for the fixed inputs above.
+        // A field reorder/add/retype in the sol! block changes these bytes and fails
+        // here, so the test is not a self-referential round-trip. The hex was captured
+        // from the schema verified byte-identical to the deployed verifier.
+        let golden = alloy_primitives::hex::decode(GOLDEN_PUBLIC_VALUES_HEX).unwrap();
+        assert_eq!(encoded, golden, "PublicValues ABI layout changed");
+
+        let decoded = PublicValues::abi_decode(&encoded, true).unwrap();
+        assert_eq!(decoded.stateRoot, pv.stateRoot);
+        assert_eq!(decoded.pointResults[0].bias, U256::from(123u64));
+        assert_eq!(decoded.accountResults[0].lastVote, U256::from(3u64));
     }
 }

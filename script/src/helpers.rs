@@ -4,7 +4,6 @@ use alloy_primitives::{hex, Address, B256, U256};
 use alloy_sol_types::{sol, SolValue};
 use rlp::Rlp;
 use serde::Deserialize;
-use sha3::{Digest, Keccak256};
 use shared::{AccountResult as SharedAccountResult, Output, PointResult as SharedPointResult};
 use std::{env, str::FromStr};
 
@@ -33,44 +32,6 @@ sol! {
         PointResult[] pointResults;
         AccountResult[] accountResults;
     }
-}
-
-///////////////////////////////////////////////
-// HASHING
-///////////////////////////////////////////////
-
-pub fn keccak256(data: &[u8]) -> [u8; 32] {
-    let mut hasher = Keccak256::new();
-    hasher.update(data);
-    hasher.finalize().into()
-}
-
-pub fn keccak_abi_encode(words: &[[u8; 32]]) -> [u8; 32] {
-    let mut buf = Vec::with_capacity(words.len() * 32);
-    for word in words {
-        buf.extend_from_slice(word);
-    }
-    keccak256(&buf)
-}
-
-///////////////////////////////////////////////
-// ABI ENCODING
-///////////////////////////////////////////////
-
-pub fn encode_u256(value: U256) -> [u8; 32] {
-    value.to_be_bytes::<32>()
-}
-
-pub fn encode_uint128(value: u128) -> [u8; 32] {
-    let mut out = [0u8; 32];
-    out[16..].copy_from_slice(&value.to_be_bytes());
-    out
-}
-
-pub fn encode_address(address: Address) -> [u8; 32] {
-    let mut out = [0u8; 32];
-    out[12..].copy_from_slice(address.as_slice());
-    out
 }
 
 ///////////////////////////////////////////////
@@ -107,12 +68,6 @@ pub fn parse_b256(value: &str) -> Result<B256, String> {
     Ok(B256::from_slice(&bytes))
 }
 
-pub fn parse_u256(value: &str) -> Result<U256, String> {
-    let trimmed = value.strip_prefix("0x").unwrap_or(value);
-    let radix = if value.starts_with("0x") { 16 } else { 10 };
-    U256::from_str_radix(trimmed, radix).map_err(|err| format!("invalid u256: {err}"))
-}
-
 ///////////////////////////////////////////////
 // ENVIRONMENT VARIABLE HELPERS
 ///////////////////////////////////////////////
@@ -134,12 +89,6 @@ pub fn parse_optional_address_env(name: &str) -> Option<Address> {
     env::var(name)
         .ok()
         .and_then(|value| Address::from_str(&value).ok())
-}
-
-pub fn parse_optional_u256_env(name: &str) -> Option<U256> {
-    env::var(name)
-        .ok()
-        .and_then(|value| parse_u256(&value).ok())
 }
 
 pub fn parse_optional_bool_env(name: &str) -> Option<bool> {
@@ -265,13 +214,7 @@ where
     }
 }
 
-pub fn deserialize_u256<'de, D>(deserializer: D) -> Result<U256, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = String::deserialize(deserializer)?;
-    parse_u256(&value).map_err(serde::de::Error::custom)
-}
+// deserialize_u256 moved with SlotConfig to `shared::protocol`.
 
 ///////////////////////////////////////////////
 // ABI DECODING (Public Values)
@@ -338,174 +281,6 @@ mod tests {
 
     // Known production values
     const TEST_EPOCH: u64 = 1730937600;
-
-    // Known keccak256 hash vectors
-    const KECCAK_EMPTY: &str = "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470";
-    const KECCAK_HELLO: &str = "1c8aff950685c2ed4bc3174f3472287b56d9517b9c948127319a09a7a36deac8";
-
-    ///////////////////////////////////////////////
-    // HASHING TESTS
-    ///////////////////////////////////////////////
-
-    #[test]
-    fn test_keccak256_empty_input() {
-        let result = keccak256(&[]);
-        assert_eq!(hex::encode(result), KECCAK_EMPTY);
-    }
-
-    #[test]
-    fn test_keccak256_hello() {
-        let result = keccak256(b"hello");
-        assert_eq!(hex::encode(result), KECCAK_HELLO);
-    }
-
-    #[test]
-    fn test_keccak256_32_byte_input() {
-        let input = [0xab_u8; 32];
-        let result = keccak256(&input);
-        // Just verify it produces a 32-byte output
-        assert_eq!(result.len(), 32);
-    }
-
-    #[test]
-    fn test_keccak256_deterministic() {
-        let result1 = keccak256(b"test input");
-        let result2 = keccak256(b"test input");
-        assert_eq!(result1, result2);
-    }
-
-    #[test]
-    fn test_keccak256_different_inputs_different_outputs() {
-        let result1 = keccak256(b"input1");
-        let result2 = keccak256(b"input2");
-        assert_ne!(result1, result2);
-    }
-
-    #[test]
-    fn test_keccak_abi_encode_single_word() {
-        let word = [0x12_u8; 32];
-        let result = keccak_abi_encode(&[word]);
-        assert_eq!(result, keccak256(&word));
-    }
-
-    #[test]
-    fn test_keccak_abi_encode_two_words() {
-        let word1 = [0x11_u8; 32];
-        let word2 = [0x22_u8; 32];
-        let result = keccak_abi_encode(&[word1, word2]);
-
-        // Manually concatenate and hash
-        let mut buf = [0u8; 64];
-        buf[..32].copy_from_slice(&word1);
-        buf[32..].copy_from_slice(&word2);
-        let expected = keccak256(&buf);
-
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_keccak_abi_encode_empty() {
-        let result = keccak_abi_encode(&[]);
-        assert_eq!(result, keccak256(&[]));
-    }
-
-    #[test]
-    fn test_keccak_abi_encode_concatenation_correctness() {
-        let word1 = encode_u256(U256::from(12));
-        let word2 = encode_address(address!("2F50D538606Fa9EDD2B11E2446BEb18C9D5846bB"));
-        let result = keccak_abi_encode(&[word1, word2]);
-
-        // Verify the result is 32 bytes
-        assert_eq!(result.len(), 32);
-    }
-
-    ///////////////////////////////////////////////
-    // ABI ENCODING TESTS
-    ///////////////////////////////////////////////
-
-    #[test]
-    fn test_encode_u256_zero() {
-        let result = encode_u256(U256::ZERO);
-        assert_eq!(result, [0u8; 32]);
-    }
-
-    #[test]
-    fn test_encode_u256_one() {
-        let result = encode_u256(U256::from(1));
-        let mut expected = [0u8; 32];
-        expected[31] = 1;
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_encode_u256_max() {
-        let result = encode_u256(U256::MAX);
-        assert_eq!(result, [0xff_u8; 32]);
-    }
-
-    #[test]
-    fn test_encode_u256_slot_value() {
-        // Slot 12 - typical weight_mapping_slot for Curve
-        let result = encode_u256(U256::from(12));
-        let mut expected = [0u8; 32];
-        expected[31] = 12;
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_encode_u256_epoch_value() {
-        // 1730937600 = 0x672C0300
-        let result = encode_u256(U256::from(TEST_EPOCH));
-        assert_eq!(result[28..], [0x67, 0x2C, 0x03, 0x00]);
-    }
-
-    #[test]
-    fn test_encode_address_zero() {
-        let result = encode_address(Address::ZERO);
-        assert_eq!(result, [0u8; 32]);
-    }
-
-    #[test]
-    fn test_encode_address_gauge_controller() {
-        let addr = address!("2F50D538606Fa9EDD2B11E2446BEb18C9D5846bB");
-        let result = encode_address(addr);
-        // First 12 bytes should be zero (left-padded)
-        assert_eq!(result[..12], [0u8; 12]);
-        // Last 20 bytes should be the address
-        assert_eq!(&result[12..], addr.as_slice());
-    }
-
-    #[test]
-    fn test_encode_address_preserves_bytes() {
-        let addr = address!("26f7786de3e6d9bd37fcf47be6f2bc455a21b74a");
-        let result = encode_address(addr);
-        assert_eq!(&result[12..], addr.as_slice());
-    }
-
-    #[test]
-    fn test_encode_uint128_zero() {
-        let result = encode_uint128(0);
-        assert_eq!(result, [0u8; 32]);
-    }
-
-    #[test]
-    fn test_encode_uint128_epoch() {
-        // 1730937600 = 0x672C0300
-        let result = encode_uint128(TEST_EPOCH as u128);
-        // First 16 bytes should be zero
-        assert_eq!(result[..16], [0u8; 16]);
-        // Bytes 28-32 should contain the value (big-endian in the lower 16 bytes)
-        assert_eq!(result[28..], [0x67, 0x2C, 0x03, 0x00]);
-    }
-
-    #[test]
-    fn test_encode_uint128_max() {
-        let result = encode_uint128(u128::MAX);
-        // First 16 bytes should be zero
-        assert_eq!(result[..16], [0u8; 16]);
-        // Last 16 bytes should be all 0xff
-        assert_eq!(result[16..], [0xff_u8; 16]);
-    }
 
     ///////////////////////////////////////////////
     // HEX FORMATTING TESTS
@@ -645,34 +420,6 @@ mod tests {
         let hex_str = "0x0000000000000000000000000000000000000000000000000000000000000000";
         let result = parse_b256(hex_str).unwrap();
         assert_eq!(result, B256::ZERO);
-    }
-
-    #[test]
-    fn test_parse_u256_decimal() {
-        assert_eq!(parse_u256("12345").unwrap(), U256::from(12345));
-    }
-
-    #[test]
-    fn test_parse_u256_hex() {
-        assert_eq!(parse_u256("0xff").unwrap(), U256::from(255));
-    }
-
-    #[test]
-    fn test_parse_u256_large_value() {
-        let hex_str = "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
-        let result = parse_u256(hex_str).unwrap();
-        assert_eq!(result, U256::MAX);
-    }
-
-    #[test]
-    fn test_parse_u256_zero() {
-        assert_eq!(parse_u256("0").unwrap(), U256::ZERO);
-        assert_eq!(parse_u256("0x0").unwrap(), U256::ZERO);
-    }
-
-    #[test]
-    fn test_parse_u256_epoch() {
-        assert_eq!(parse_u256("1730937600").unwrap(), U256::from(TEST_EPOCH));
     }
 
     ///////////////////////////////////////////////

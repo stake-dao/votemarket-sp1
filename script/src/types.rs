@@ -8,7 +8,7 @@ use std::{env, fs};
 
 use crate::helpers::{
     deserialize_optional_address, parse_address_env, parse_optional_address_env,
-    parse_optional_u256_env, parse_optional_u64_env, u256_to_hex,
+    parse_optional_u64_env, u256_to_hex,
 };
 use crate::protocol::{Protocol, SlotConfig, SlotRequest};
 
@@ -68,7 +68,12 @@ impl HostInput {
         let protocol_name = env::var("PROTOCOL")
             .unwrap_or_else(|_| "curve".to_string())
             .to_lowercase();
-        let protocol = Protocol::from_str(&protocol_name);
+        let protocol = Protocol::from_name(&protocol_name).ok_or_else(|| {
+            format!(
+                "unknown protocol '{protocol_name}' (no Default fallback; \
+                 use curve, balancer, frax, fxn, yb, pendle)"
+            )
+        })?;
         let gauge = parse_address_env("GAUGE")?;
         let account = parse_address_env("ACCOUNT")?;
         let epoch_override = parse_optional_u64_env("EPOCH");
@@ -83,33 +88,10 @@ impl HostInput {
                 )
             })?;
 
-        // Slots are optional - they can come from env vars or from toolkit defaults
-        let weight_mapping_slot = parse_optional_u256_env("WEIGHT_MAPPING_SLOT");
-        let last_vote_mapping_slot = parse_optional_u256_env("LAST_VOTE_MAPPING_SLOT");
-        let user_slope_mapping_slot = parse_optional_u256_env("USER_SLOPE_MAPPING_SLOT");
-
-        // Use env slots if all are provided, otherwise use toolkit defaults for the protocol
-        let slots = match (
-            weight_mapping_slot,
-            last_vote_mapping_slot,
-            user_slope_mapping_slot,
-        ) {
-            (Some(w), Some(l), Some(u)) => SlotConfig {
-                weight_mapping_slot: w,
-                last_vote_mapping_slot: l,
-                user_slope_mapping_slot: u,
-            },
-            _ => {
-                // Try to use toolkit defaults
-                protocol.toolkit_slots().ok_or_else(|| {
-                    format!(
-                        "Missing slot env vars and no toolkit defaults for protocol '{protocol_name}'. \
-                         Set WEIGHT_MAPPING_SLOT, LAST_VOTE_MAPPING_SLOT, USER_SLOPE_MAPPING_SLOT \
-                         or use a protocol with toolkit defaults (curve, balancer, frax, fxn, pendle, yb)"
-                    )
-                })?
-            }
-        };
+        // Slots are circuit constants derived from the protocol, never host-supplied:
+        // the guest derives the same canonical slots in-circuit, so any host override
+        // would desync host-fetched proofs from guest-verified keys.
+        let slots = protocol.base_slots();
 
         Ok(Self {
             chain_id,
@@ -140,7 +122,12 @@ impl HostInput {
             .protocol
             .unwrap_or_else(|| "curve".to_string())
             .to_lowercase();
-        let protocol = Protocol::from_str(&protocol_name);
+        let protocol = Protocol::from_name(&protocol_name).ok_or_else(|| {
+            format!(
+                "unknown protocol '{protocol_name}' (no Default fallback; \
+                 use curve, balancer, frax, fxn, yb, pendle)"
+            )
+        })?;
 
         // Gauge controller comes from request if provided, otherwise from protocol defaults
         let gauge_controller = request
@@ -153,16 +140,10 @@ impl HostInput {
                 )
             })?;
 
-        // Slots come from request if provided, otherwise from protocol defaults
-        let slots = request
-            .slots
-            .or_else(|| protocol.toolkit_slots())
-            .ok_or_else(|| {
-                format!(
-                    "No slots for protocol '{protocol_name}'. \
-                     Provide slots in JSON or use a known protocol (curve, balancer, frax, fxn, pendle, yb)"
-                )
-            })?;
+        // Slots are circuit constants derived from the protocol, never request-supplied
+        // (the guest derives the same canonical slots in-circuit). A JSON `slots`
+        // override is ignored on purpose to keep host and guest aligned.
+        let slots = protocol.base_slots();
 
         Ok(Self {
             chain_id: request.chain_id,
@@ -311,9 +292,7 @@ mod tests {
 
     #[test]
     fn test_request_item_null_account() {
-        let json = format!(
-            r#"{{"type": "point_data", "account": null, "gauge": "{TEST_GAUGE}"}}"#
-        );
+        let json = format!(r#"{{"type": "point_data", "account": null, "gauge": "{TEST_GAUGE}"}}"#);
         let item: RequestItem = serde_json::from_str(&json).unwrap();
         assert!(item.account.is_none());
     }
@@ -407,7 +386,9 @@ mod tests {
     }
 
     #[test]
-    fn test_host_input_from_request_custom_slots() {
+    fn test_host_input_from_request_ignores_slot_override() {
+        // Slots are circuit constants: a JSON `slots` override is ignored in favor of
+        // the protocol's canonical base slots, so host and guest stay aligned.
         let request = HostRequest {
             chain_id: 1,
             block_number: TEST_BLOCK,
@@ -422,9 +403,19 @@ mod tests {
             requests: vec![],
         };
         let input = HostInput::from_request(request).unwrap();
-        assert_eq!(input.slots.weight_mapping_slot, U256::from(100));
-        assert_eq!(input.slots.last_vote_mapping_slot, U256::from(101));
-        assert_eq!(input.slots.user_slope_mapping_slot, U256::from(102));
+        let canonical = crate::protocol::Protocol::Curve.base_slots();
+        assert_eq!(
+            input.slots.weight_mapping_slot,
+            canonical.weight_mapping_slot
+        );
+        assert_eq!(
+            input.slots.last_vote_mapping_slot,
+            canonical.last_vote_mapping_slot
+        );
+        assert_eq!(
+            input.slots.user_slope_mapping_slot,
+            canonical.user_slope_mapping_slot
+        );
     }
 
     #[test]

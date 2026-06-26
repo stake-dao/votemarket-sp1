@@ -403,6 +403,8 @@ The ZK circuit receives a `state_root` as input and trusts it implicitly. It doe
 
 This design reuses the existing trust infrastructure. The Oracle already stores validated block headers (including state roots) per epoch, populated by the L1→L2 bridge or authorized providers. By validating against the Oracle, the ZK path maintains the same security guarantees as the MPT path.
 
+**Storage-slot binding (in-circuit).** The circuit derives each storage slot itself from `(protocol_id, gauge, account, epoch)` using the canonical per-protocol layout, instead of trusting a host-supplied slot. This binds the committed labels (gauge / account / epoch) to the verified storage key: a value proven at one slot cannot be relabeled under another (a mismatched label resolves to an exclusion proof and reads zero). An unknown `protocol_id` is rejected (fail-closed), and the protocol's mapping slots are circuit constants, not request inputs. The host computes the same slots only to fetch Merkle proofs; it no longer passes them into the circuit. The `gauge_controller` account that the proof is verified against is still host-supplied — binding which account is proven is a separate, later hardening step.
+
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                         TRUST FLOW                                  │
