@@ -14,6 +14,8 @@ sol! {
         address gauge;
         uint256 epoch;
         uint256 bias;
+        uint8 protocolId;
+        address gaugeController;
     }
 
     struct AccountResult {
@@ -23,6 +25,8 @@ sol! {
         uint256 slope;
         uint256 end;
         uint256 lastVote;
+        uint8 protocolId;
+        address gaugeController;
     }
 
     /// Public values struct committed by the circuit.
@@ -246,6 +250,8 @@ pub fn decode_abi_public_values(raw_bytes: &[u8]) -> Result<Output, String> {
                 gauge: p.gauge,
                 epoch: epoch_val,
                 bias: p.bias,
+                protocol_id: p.protocolId,
+                gauge_controller: p.gaugeController,
             }
         })
         .collect();
@@ -262,6 +268,8 @@ pub fn decode_abi_public_values(raw_bytes: &[u8]) -> Result<Output, String> {
                 slope: a.slope,
                 end: a.end,
                 last_vote: a.lastVote,
+                protocol_id: a.protocolId,
+                gauge_controller: a.gaugeController,
             }
         })
         .collect();
@@ -534,7 +542,13 @@ mod tests {
         let epoch = U256::from(TEST_EPOCH);
         let bias = U256::from(1000);
 
-        let point_results = vec![PointResult { gauge, epoch, bias }];
+        let point_results = vec![PointResult {
+            gauge,
+            epoch,
+            bias,
+            protocolId: 4,
+            gaugeController: address!("1Be14811A3a06F6aF4fA64310a636e1Df04c1c21"),
+        }];
         let account_results: Vec<AccountResult> = vec![];
 
         let public_values = PublicValues {
@@ -551,6 +565,11 @@ mod tests {
         assert_eq!(decoded.point_results[0].gauge, gauge);
         assert_eq!(decoded.point_results[0].epoch, TEST_EPOCH);
         assert_eq!(decoded.point_results[0].bias, bias);
+        assert_eq!(decoded.point_results[0].protocol_id, 4);
+        assert_eq!(
+            decoded.point_results[0].gauge_controller,
+            address!("1Be14811A3a06F6aF4fA64310a636e1Df04c1c21")
+        );
     }
 
     #[test]
@@ -567,6 +586,8 @@ mod tests {
             slope: U256::from(100),
             end: U256::from(1800000000u64),
             lastVote: U256::from(1700000000u64),
+            protocolId: 0,
+            gaugeController: address!("2F50D538606Fa9EDD2B11E2446BEb18C9D5846bB"),
         }];
 
         let public_values = PublicValues {

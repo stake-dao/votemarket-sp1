@@ -34,6 +34,8 @@ sol! {
         address gauge;
         uint256 epoch;
         uint256 bias;
+        uint8 protocolId;
+        address gaugeController;
     }
 
     /// Verified account voting data (vote_user_slopes, last_user_vote).
@@ -44,6 +46,8 @@ sol! {
         uint256 slope;
         uint256 end;
         uint256 lastVote;
+        uint8 protocolId;
+        address gaugeController;
     }
 
     /// Public values struct committed by the circuit.
@@ -83,6 +87,8 @@ pub fn main() {
             gauge: p.gauge,
             epoch: U256::from(p.epoch),
             bias: p.bias,
+            protocolId: p.protocol_id,
+            gaugeController: p.gauge_controller,
         })
         .collect();
 
@@ -95,6 +101,8 @@ pub fn main() {
             slope: a.slope,
             end: a.end,
             lastVote: a.last_vote,
+            protocolId: a.protocol_id,
+            gaugeController: a.gauge_controller,
         })
         .collect();
 
@@ -137,6 +145,10 @@ fn process_point_requests(
                 gauge: req.gauge,
                 epoch,
                 bias,
+                // Commit the protocol id and the EXACT account whose proof was just
+                // verified above, so the on-chain whitelist authenticates the source.
+                protocol_id: req.protocol_id,
+                gauge_controller: req.gauge_controller,
             }
         })
         .collect()
@@ -184,6 +196,10 @@ fn process_account_requests(
                 slope,
                 end,
                 last_vote,
+                // Commit the protocol id and the EXACT account whose proof was just
+                // verified above, so the on-chain whitelist authenticates the source.
+                protocol_id: req.protocol_id,
+                gauge_controller: req.gauge_controller,
             }
         })
         .collect()
@@ -644,6 +660,80 @@ mod tests {
         assert_eq!(results[0].bias, bias_value);
     }
 
+    // Binding invariant (the v2.2 security hinge): the committed `gauge_controller`
+    // and `protocol_id` are exactly the request's, and `gauge_controller` is the same
+    // account whose account proof was verified (so the on-chain whitelist authenticates
+    // the real source of the value). Covers both point and account results.
+    #[test]
+    fn test_committed_controller_is_proven_account() {
+        let gauge = TEST_GAUGE.parse::<Address>().unwrap();
+        let account = TEST_ACCOUNT.parse::<Address>().unwrap();
+        // A specific, non-default controller: this is the account the proof is built
+        // against, and must surface unchanged on the committed result.
+        let gauge_controller = Address::repeat_byte(0xc7);
+        let protocol = Protocol::Curve;
+
+        // Point result
+        let bias_slot = derive_point_slot(protocol, gauge, TEST_EPOCH);
+        let (p_root, bias_proof) = create_storage_trie_proof(bias_slot, U256::from(1u64));
+        let (p_state, p_account_proof) = create_account_trie_proof(gauge_controller, p_root);
+        let p = &process_point_requests(
+            &p_state,
+            TEST_EPOCH,
+            &[PointRequest {
+                protocol_id: protocol.as_u8(),
+                gauge,
+                gauge_controller,
+                account_proof: p_account_proof,
+                bias_proof,
+            }],
+        )[0];
+        assert_eq!(p.protocol_id, protocol.as_u8());
+        assert_eq!(p.gauge_controller, gauge_controller);
+
+        // Account result
+        let slots = derive_account_slots(protocol, account, gauge);
+        let memdb = Arc::new(MemoryDB::new(true));
+        let mut trie = EthTrie::new(memdb.clone());
+        for (slot, value) in [
+            (slots.slope, U256::from(5u64)),
+            (slots.end, U256::from(6u64)),
+            (slots.last_vote.unwrap(), U256::from(7u64)),
+        ] {
+            let key = keccak256(&slot.to_be_bytes::<32>());
+            let mut rlp_value = Vec::new();
+            value.encode(&mut rlp_value);
+            trie.insert(&key, &rlp_value).unwrap();
+        }
+        let a_root = B256::from(trie.root_hash().unwrap().0);
+        let slope_proof = trie
+            .get_proof(&keccak256(&slots.slope.to_be_bytes::<32>()))
+            .unwrap();
+        let end_proof = trie
+            .get_proof(&keccak256(&slots.end.to_be_bytes::<32>()))
+            .unwrap();
+        let lv_proof = trie
+            .get_proof(&keccak256(&slots.last_vote.unwrap().to_be_bytes::<32>()))
+            .unwrap();
+        let (a_state, a_account_proof) = create_account_trie_proof(gauge_controller, a_root);
+        let a = &process_account_requests(
+            &a_state,
+            TEST_EPOCH,
+            &[AccountRequest {
+                protocol_id: protocol.as_u8(),
+                account,
+                gauge,
+                gauge_controller,
+                account_proof: a_account_proof,
+                slope_proof,
+                end_proof,
+                last_vote_proof: Some(lv_proof),
+            }],
+        )[0];
+        assert_eq!(a.protocol_id, protocol.as_u8());
+        assert_eq!(a.gauge_controller, gauge_controller);
+    }
+
     #[test]
     fn test_process_point_requests_preserves_epoch() {
         let gauge = TEST_GAUGE.parse::<Address>().unwrap();
@@ -1038,12 +1128,14 @@ mod tests {
         let _ = process_point_requests(&state_root, TEST_EPOCH, &[req]);
     }
 
-    // PublicValues ABI layout must stay byte-identical (no ZKVerifier.sol change).
-    // The schema is pinned by the sol! macro; this asserts the encoded selector-free
-    // tuple round-trips for the canonical shape (stateRoot, epoch, point[], account[]).
+    // PublicValues ABI layout (v2.2 schema). PointResult and AccountResult now carry
+    // `protocolId` (uint8) + `gaugeController` (address) appended after the prior fields.
+    // The golden byte fixture pins the on-wire layout, so a field reorder/add/retype in
+    // the sol! block changes these bytes and fails here. This schema must match the
+    // ZKVerifier.sol structs + _decodePublicValues in contracts-monorepo.
     #[test]
-    fn test_public_values_abi_unchanged() {
-        const GOLDEN_PUBLIC_VALUES_HEX: &str = "0000000000000000000000000000000000000000000000000000000000000020abababababababababababababababababababababababababababababababab00000000000000000000000000000000000000000000000000000000672c030000000000000000000000000000000000000000000000000000000000000000800000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000100000000000000000000000026f7786de3e6d9bd37fcf47be6f2bc455a21b74a00000000000000000000000000000000000000000000000000000000672c0300000000000000000000000000000000000000000000000000000000000000007b0000000000000000000000000000000000000000000000000000000000000001000000000000000000000000fac2f11ba2577d5122dc1ec5301d35b16688251e00000000000000000000000026f7786de3e6d9bd37fcf47be6f2bc455a21b74a00000000000000000000000000000000000000000000000000000000672c0300000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000003";
+    fn test_public_values_abi_schema() {
+        const GOLDEN_PUBLIC_VALUES_HEX: &str = "0000000000000000000000000000000000000000000000000000000000000020abababababababababababababababababababababababababababababababab00000000000000000000000000000000000000000000000000000000672c030000000000000000000000000000000000000000000000000000000000000000800000000000000000000000000000000000000000000000000000000000000140000000000000000000000000000000000000000000000000000000000000000100000000000000000000000026f7786de3e6d9bd37fcf47be6f2bc455a21b74a00000000000000000000000000000000000000000000000000000000672c0300000000000000000000000000000000000000000000000000000000000000007b0000000000000000000000000000000000000000000000000000000000000004000000000000000000000000fac2f11ba2577d5122dc1ec5301d35b16688251e0000000000000000000000000000000000000000000000000000000000000001000000000000000000000000fac2f11ba2577d5122dc1ec5301d35b16688251e00000000000000000000000026f7786de3e6d9bd37fcf47be6f2bc455a21b74a00000000000000000000000000000000000000000000000000000000672c0300000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000003000000000000000000000000000000000000000000000000000000000000000000000000000000000000000026f7786de3e6d9bd37fcf47be6f2bc455a21b74a";
         let pv = PublicValues {
             stateRoot: B256::repeat_byte(0xab),
             epoch: U256::from(TEST_EPOCH),
@@ -1051,6 +1143,8 @@ mod tests {
                 gauge: TEST_GAUGE.parse().unwrap(),
                 epoch: U256::from(TEST_EPOCH),
                 bias: U256::from(123u64),
+                protocolId: 4,
+                gaugeController: TEST_ACCOUNT.parse().unwrap(),
             }],
             accountResults: vec![AccountResult {
                 account: TEST_ACCOUNT.parse().unwrap(),
@@ -1059,19 +1153,21 @@ mod tests {
                 slope: U256::from(1u64),
                 end: U256::from(2u64),
                 lastVote: U256::from(3u64),
+                protocolId: 0,
+                gaugeController: TEST_GAUGE.parse().unwrap(),
             }],
         };
         let encoded = PublicValues::abi_encode(&pv);
-        // Golden byte fixture: pins the on-wire ABI layout for the fixed inputs above.
-        // A field reorder/add/retype in the sol! block changes these bytes and fails
-        // here, so the test is not a self-referential round-trip. The hex was captured
-        // from the schema verified byte-identical to the deployed verifier.
         let golden = alloy_primitives::hex::decode(GOLDEN_PUBLIC_VALUES_HEX).unwrap();
         assert_eq!(encoded, golden, "PublicValues ABI layout changed");
 
         let decoded = PublicValues::abi_decode(&encoded, true).unwrap();
         assert_eq!(decoded.stateRoot, pv.stateRoot);
         assert_eq!(decoded.pointResults[0].bias, U256::from(123u64));
-        assert_eq!(decoded.accountResults[0].lastVote, U256::from(3u64));
+        assert_eq!(decoded.pointResults[0].protocolId, 4);
+        assert_eq!(
+            decoded.accountResults[0].gaugeController,
+            pv.accountResults[0].gaugeController
+        );
     }
 }

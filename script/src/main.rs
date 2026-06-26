@@ -271,13 +271,23 @@ async fn main() {
             println!("  Epoch: {}", output.epoch);
             println!("  Point results: {}", output.point_results.len());
             for (i, res) in output.point_results.iter().enumerate() {
-                println!("    [{}] gauge={} bias={}", i, res.gauge, res.bias);
+                println!(
+                    "    [{}] gauge={} bias={} protocol_id={} controller={}",
+                    i, res.gauge, res.bias, res.protocol_id, res.gauge_controller
+                );
             }
             println!("  Account results: {}", output.account_results.len());
             for (i, res) in output.account_results.iter().enumerate() {
                 println!(
-                    "    [{}] account={} gauge={} slope={} end={} last_vote={}",
-                    i, res.account, res.gauge, res.slope, res.end, res.last_vote
+                    "    [{}] account={} gauge={} slope={} end={} last_vote={} protocol_id={} controller={}",
+                    i,
+                    res.account,
+                    res.gauge,
+                    res.slope,
+                    res.end,
+                    res.last_vote,
+                    res.protocol_id,
+                    res.gauge_controller
                 );
             }
         }
