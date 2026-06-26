@@ -129,10 +129,14 @@ pub fn build_input_from_rpc(
                     .find(|s| s.label == "user_slope")
                     .ok_or("missing user_slope slot")?;
 
+                // Prefer the explicit `user_end`; fall back to `user_bias` only for
+                // protocols without `user_end` (Pendle). Must match the guest's
+                // `derive_account_slots` selection.
                 let end_slot = request
                     .slots
                     .iter()
-                    .find(|s| s.label == "user_end" || s.label == "user_bias")
+                    .find(|s| s.label == "user_end")
+                    .or_else(|| request.slots.iter().find(|s| s.label == "user_bias"))
                     .ok_or("missing user_end/user_bias slot")?;
 
                 let last_vote_slot = request.slots.iter().find(|s| s.label == "last_vote");
@@ -252,10 +256,13 @@ pub fn build_input_from_toolkit(
                     .position(|s| s.label == "user_slope")
                     .ok_or("missing user_slope slot")?;
 
+                // Prefer the explicit `user_end`; fall back to `user_bias` only for
+                // protocols without `user_end` (Pendle). Must match the guest.
                 let end_idx = request
                     .slots
                     .iter()
-                    .position(|s| s.label == "user_end" || s.label == "user_bias")
+                    .position(|s| s.label == "user_end")
+                    .or_else(|| request.slots.iter().position(|s| s.label == "user_bias"))
                     .ok_or("missing user_end/user_bias slot")?;
 
                 let last_vote_idx = request.slots.iter().position(|s| s.label == "last_vote");
