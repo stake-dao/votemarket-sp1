@@ -4,7 +4,7 @@
 FROM ubuntu:24.04
 
 # Build arguments
-ARG SP1_VERSION=v5.2.4
+ARG SP1_VERSION=v6.3.0
 
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
@@ -18,6 +18,7 @@ RUN apt-get update && apt-get install -y \
     libssl-dev \
     ca-certificates \
     gosu \
+    protobuf-compiler \
     python3 \
     python3-pip \
     python3-venv \

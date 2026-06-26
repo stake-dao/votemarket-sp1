@@ -13,7 +13,8 @@ mod toolkit;
 mod types;
 
 use alloy_primitives::U256;
-use sp1_sdk::{HashableKey, NetworkSigner, ProverClient, SP1Stdin};
+use sp1_sdk::network::signer::NetworkSigner;
+use sp1_sdk::{Elf, HashableKey, ProveRequest, Prover, ProverClient, ProvingKey, SP1Stdin};
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -34,9 +35,9 @@ use types::HostInput;
 ///////////////////////////////////////////////
 
 const DEFAULT_ELF_REL_PATHS: [&str; 3] = [
-    "../program/elf/riscv32im-succinct-zkvm-elf",
-    "../target/elf-compilation/riscv32im-succinct-zkvm-elf/release/program",
-    "../target/elf-compilation/riscv32im-succinct-zkvm-elf/debug/program",
+    "../program/elf/riscv64im-succinct-zkvm-elf",
+    "../target/elf-compilation/riscv64im-succinct-zkvm-elf/release/program",
+    "../target/elf-compilation/riscv64im-succinct-zkvm-elf/debug/program",
 ];
 const ONE_WEEK_SECONDS: u64 = 7 * 24 * 60 * 60;
 
@@ -84,9 +85,12 @@ async fn main() {
     // Quick mode: just print the VKEY and exit (no proof generation needed)
     if parse_optional_bool_env("VKEY_ONLY").unwrap_or(false) {
         env::set_var("SP1_PROVER", "cpu");
-        let client = ProverClient::from_env();
-        let elf = load_elf();
-        let (_, vk) = client.setup(elf.as_slice());
+        let client = ProverClient::from_env().await;
+        let pk = client
+            .setup(Elf::from(load_elf()))
+            .await
+            .expect("Failed to setup prover");
+        let vk = pk.verifying_key();
         println!("Program VKEY: {}", vk.bytes32());
         return;
     }
@@ -173,9 +177,9 @@ async fn main() {
     }
 
     // Use from_env() which reads SP1_PROVER and NETWORK_PRIVATE_KEY
-    let client = ProverClient::from_env();
+    let client = ProverClient::from_env().await;
     let mut stdin = SP1Stdin::new();
-    let elf = load_elf();
+    let elf: Elf = load_elf().into();
 
     let (state_root, timestamp) = fetch_block_state_root(&http_client, &rpc_url, block_number)
         .await
@@ -253,10 +257,8 @@ async fn main() {
     match run_mode {
         RunMode::Execute => {
             println!("Executing in mock mode...");
-            let (public_values, report) = client
-                .execute(elf.as_slice(), &stdin)
-                .run()
-                .expect("Execution failed");
+            let (public_values, report) =
+                client.execute(elf, stdin).await.expect("Execution failed");
             println!("Execution successful!");
 
             // Decode ABI-encoded public values (raw() returns hex string)
@@ -293,22 +295,23 @@ async fn main() {
         }
         RunMode::Prove => {
             println!("Generating proof (mode: {})...", proof_kind.as_str());
-            let (pk, vk) = client.setup(elf.as_slice());
+            let pk = client.setup(elf).await.expect("Failed to setup prover");
+            let vk = pk.verifying_key();
 
             // Print the verification key (PROGRAM_VKEY for Solidity contract)
             println!("Program VKEY: {}", vk.bytes32());
 
             let proof = match proof_kind {
-                ProofKind::Core => client.prove(&pk, &stdin).run(),
-                ProofKind::Compressed => client.prove(&pk, &stdin).compressed().run(),
-                ProofKind::Plonk => client.prove(&pk, &stdin).plonk().run(),
-                ProofKind::Groth16 => client.prove(&pk, &stdin).groth16().run(),
+                ProofKind::Core => client.prove(&pk, stdin).await,
+                ProofKind::Compressed => client.prove(&pk, stdin).compressed().await,
+                ProofKind::Plonk => client.prove(&pk, stdin).plonk().await,
+                ProofKind::Groth16 => client.prove(&pk, stdin).groth16().await,
             }
             .expect("Proof generation failed");
 
             if verify_proof {
                 client
-                    .verify(&proof, &vk)
+                    .verify(&proof, vk, None)
                     .expect("Proof verification failed");
                 println!("Proof verification succeeded");
             }
