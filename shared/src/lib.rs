@@ -25,8 +25,8 @@ pub struct Input {
 /// A request to verify gauge point data (points_weight[gauge][epoch]).
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PointRequest {
-    /// Canonical protocol id (see [`protocol::Protocol`]). Private circuit input:
-    /// the guest derives the bias slot from `(protocol_id, gauge, epoch)`. Not committed.
+    /// Canonical protocol id (see [`protocol::Protocol`]). The guest derives the
+    /// bias slot from `(protocol_id, gauge, epoch)` and commits it on the result.
     pub protocol_id: u8,
     /// The gauge address.
     pub gauge: Address,
@@ -41,9 +41,9 @@ pub struct PointRequest {
 /// A request to verify account voting data (vote_user_slopes, last_user_vote).
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct AccountRequest {
-    /// Canonical protocol id (see [`protocol::Protocol`]). Private circuit input:
-    /// the guest derives the slope/end/last_vote slots from
-    /// `(protocol_id, account, gauge)`. Not committed.
+    /// Canonical protocol id (see [`protocol::Protocol`]). The guest derives the
+    /// slope/end/last_vote slots from `(protocol_id, account, gauge)` and commits it
+    /// on the result.
     pub protocol_id: u8,
     /// The voter account address.
     pub account: Address,
@@ -88,6 +88,14 @@ pub struct PointResult {
     pub epoch: u64,
     /// The bias (total votes) for this gauge at this epoch.
     pub bias: U256,
+    /// Canonical protocol id (committed). Authenticated on-chain against the
+    /// `ZKVerifier.canonicalController` whitelist together with `gauge_controller`.
+    pub protocol_id: u8,
+    /// The gauge controller account whose storage proof was verified for this
+    /// result. Committed so the on-chain whitelist can assert it is the canonical
+    /// controller for `protocol_id`. This is the SAME account the in-circuit
+    /// account proof was verified against (the binding invariant).
+    pub gauge_controller: Address,
 }
 
 /// Verified account voting data (vote_user_slopes, last_user_vote).
@@ -105,6 +113,14 @@ pub struct AccountResult {
     pub end: U256,
     /// The last vote timestamp (0 for Pendle which doesn't have this).
     pub last_vote: U256,
+    /// Canonical protocol id (committed). Authenticated on-chain against the
+    /// `ZKVerifier.canonicalController` whitelist together with `gauge_controller`.
+    pub protocol_id: u8,
+    /// The gauge controller account whose storage proof was verified for this
+    /// result. Committed so the on-chain whitelist can assert it is the canonical
+    /// controller for `protocol_id`. This is the SAME account the in-circuit
+    /// account proof was verified against (the binding invariant).
+    pub gauge_controller: Address,
 }
 
 #[cfg(test)]
@@ -237,14 +253,16 @@ mod tests {
             gauge: TEST_GAUGE.parse().unwrap(),
             epoch: TEST_EPOCH,
             bias: U256::from(1000000u64),
+            protocol_id: 0,
+            gauge_controller: TEST_ACCOUNT.parse().unwrap(),
         };
 
         let json = serde_json::to_string(&result).unwrap();
         let deserialized: PointResult = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(deserialized.gauge, result.gauge);
-        assert_eq!(deserialized.epoch, result.epoch);
-        assert_eq!(deserialized.bias, result.bias);
+        assert_eq!(deserialized, result);
+        assert_eq!(deserialized.protocol_id, 0);
+        assert_eq!(deserialized.gauge_controller, result.gauge_controller);
     }
 
     // =========================================================================
@@ -260,12 +278,15 @@ mod tests {
             slope: U256::from(500u64),
             end: U256::from(2000000000u64),
             last_vote: U256::from(1700000000u64),
+            protocol_id: 4,
+            gauge_controller: TEST_GAUGE.parse().unwrap(),
         };
 
         let json = serde_json::to_string(&result).unwrap();
         let deserialized: AccountResult = serde_json::from_str(&json).unwrap();
 
         assert_eq!(deserialized, result);
+        assert_eq!(deserialized.protocol_id, 4);
     }
 
     // =========================================================================
@@ -281,6 +302,8 @@ mod tests {
                 gauge: TEST_GAUGE.parse().unwrap(),
                 epoch: TEST_EPOCH,
                 bias: U256::from(999u64),
+                protocol_id: 0,
+                gauge_controller: TEST_ACCOUNT.parse().unwrap(),
             }],
             account_results: vec![AccountResult {
                 account: TEST_ACCOUNT.parse().unwrap(),
@@ -289,6 +312,8 @@ mod tests {
                 slope: U256::from(100u64),
                 end: U256::from(1800000000u64),
                 last_vote: U256::ZERO,
+                protocol_id: 0,
+                gauge_controller: TEST_ACCOUNT.parse().unwrap(),
             }],
         };
 
