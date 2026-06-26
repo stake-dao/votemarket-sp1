@@ -5,7 +5,7 @@ use shared::{AccountRequest, Input, PointRequest};
 use std::collections::HashMap;
 
 use crate::helpers::{decode_proof_nodes, decode_rlp_node_list, decode_rlp_proof_list};
-use crate::protocol::{gauge_time_slot, user_vote_slots, SlotRequest};
+use crate::protocol::{gauge_time_slot, user_vote_slots, Protocol, SlotRequest};
 use crate::rpc::ProofResponse;
 use crate::toolkit::ToolkitProofBundle;
 use crate::types::{HostInput, RequestKind, RequestSlots};
@@ -72,6 +72,7 @@ pub fn expand_requests(input: &HostInput, epoch: u64) -> Result<Vec<RequestSlots
 pub fn build_input_from_rpc(
     state_root: B256,
     epoch: u64,
+    protocol: Protocol,
     gauge_controller: Address,
     requests: &[RequestSlots],
     proof: ProofResponse,
@@ -111,17 +112,17 @@ pub fn build_input_from_rpc(
                     .clone();
 
                 point_requests.push(PointRequest {
+                    protocol_id: protocol.as_u8(),
                     gauge: request.gauge,
                     gauge_controller,
                     account_proof: account_proof.clone(),
                     bias_proof,
-                    bias_slot: bias_slot.slot,
                 });
             }
             RequestKind::AccountData => {
                 let account = request.account.ok_or("missing account for account_data")?;
 
-                // Find required slots
+                // Find required slots (host-internal: used to locate the matching proof).
                 let slope_slot = request
                     .slots
                     .iter()
@@ -146,18 +147,18 @@ pub fn build_input_from_rpc(
                     .ok_or("missing end proof")?
                     .clone();
 
-                let (last_vote_proof, last_vote_slot_val) = match last_vote_slot {
-                    Some(slot) => {
-                        let proof = slot_to_proof
+                let last_vote_proof = match last_vote_slot {
+                    Some(slot) => Some(
+                        slot_to_proof
                             .get(&slot.slot)
                             .ok_or("missing last_vote proof")?
-                            .clone();
-                        (Some(proof), Some(slot.slot))
-                    }
-                    None => (None, None),
+                            .clone(),
+                    ),
+                    None => None,
                 };
 
                 account_requests.push(AccountRequest {
+                    protocol_id: protocol.as_u8(),
                     account,
                     gauge: request.gauge,
                     gauge_controller,
@@ -165,9 +166,6 @@ pub fn build_input_from_rpc(
                     slope_proof,
                     end_proof,
                     last_vote_proof,
-                    slope_slot: slope_slot.slot,
-                    end_slot: end_slot.slot,
-                    last_vote_slot: last_vote_slot_val,
                 });
             }
         }
@@ -189,6 +187,7 @@ pub fn build_input_from_rpc(
 pub fn build_input_from_toolkit(
     state_root: B256,
     epoch: u64,
+    protocol: Protocol,
     gauge_controller: Address,
     requests: &[RequestSlots],
     bundle: ToolkitProofBundle,
@@ -228,18 +227,12 @@ pub fn build_input_from_toolkit(
                     return Err("empty point_data_proof".to_string());
                 }
 
-                let bias_slot = request
-                    .slots
-                    .iter()
-                    .find(|s| s.label == "weight_bias")
-                    .ok_or("missing weight_bias slot")?;
-
                 point_requests.push(PointRequest {
+                    protocol_id: protocol.as_u8(),
                     gauge: request.gauge,
                     gauge_controller,
                     account_proof: account_proof_nodes.clone(),
                     bias_proof: proofs[0].clone(),
-                    bias_slot: bias_slot.slot,
                 });
             }
             RequestKind::AccountData => {
@@ -275,15 +268,10 @@ pub fn build_input_from_toolkit(
                     ));
                 }
 
-                let slope_slot = &request.slots[slope_idx];
-                let end_slot = &request.slots[end_idx];
-
-                let (last_vote_proof, last_vote_slot_val) = match last_vote_idx {
-                    Some(idx) => (Some(proofs[idx].clone()), Some(request.slots[idx].slot)),
-                    None => (None, None),
-                };
+                let last_vote_proof = last_vote_idx.map(|idx| proofs[idx].clone());
 
                 account_requests.push(AccountRequest {
+                    protocol_id: protocol.as_u8(),
                     account,
                     gauge: request.gauge,
                     gauge_controller,
@@ -291,9 +279,6 @@ pub fn build_input_from_toolkit(
                     slope_proof: proofs[slope_idx].clone(),
                     end_proof: proofs[end_idx].clone(),
                     last_vote_proof,
-                    slope_slot: slope_slot.slot,
-                    end_slot: end_slot.slot,
-                    last_vote_slot: last_vote_slot_val,
                 });
             }
         }

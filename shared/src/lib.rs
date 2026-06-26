@@ -1,6 +1,9 @@
 use alloy_primitives::{Address, B256, U256};
 use serde::{Deserialize, Serialize};
 
+pub mod encoding;
+pub mod protocol;
+
 ///////////////////////////////////////////////////////////////////////////////
 // INPUT TYPES (Host → Guest)
 ///////////////////////////////////////////////////////////////////////////////
@@ -22,6 +25,9 @@ pub struct Input {
 /// A request to verify gauge point data (points_weight[gauge][epoch]).
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PointRequest {
+    /// Canonical protocol id (see [`protocol::Protocol`]). Private circuit input:
+    /// the guest derives the bias slot from `(protocol_id, gauge, epoch)`. Not committed.
+    pub protocol_id: u8,
     /// The gauge address.
     pub gauge: Address,
     /// The gauge controller contract address.
@@ -30,13 +36,15 @@ pub struct PointRequest {
     pub account_proof: Vec<Vec<u8>>,
     /// Merkle proof from storage root to bias slot.
     pub bias_proof: Vec<Vec<u8>>,
-    /// The storage slot for points_weight[gauge][epoch].bias.
-    pub bias_slot: U256,
 }
 
 /// A request to verify account voting data (vote_user_slopes, last_user_vote).
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct AccountRequest {
+    /// Canonical protocol id (see [`protocol::Protocol`]). Private circuit input:
+    /// the guest derives the slope/end/last_vote slots from
+    /// `(protocol_id, account, gauge)`. Not committed.
+    pub protocol_id: u8,
     /// The voter account address.
     pub account: Address,
     /// The gauge address.
@@ -51,12 +59,6 @@ pub struct AccountRequest {
     pub end_proof: Vec<Vec<u8>>,
     /// Merkle proof from storage root to last_vote slot (None for Pendle).
     pub last_vote_proof: Option<Vec<Vec<u8>>>,
-    /// The storage slot for vote_user_slopes[account][gauge].slope.
-    pub slope_slot: U256,
-    /// The storage slot for vote_user_slopes[account][gauge].end.
-    pub end_slot: U256,
-    /// The storage slot for last_user_vote[account][gauge] (None for Pendle).
-    pub last_vote_slot: Option<U256>,
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -161,21 +163,21 @@ mod tests {
     #[test]
     fn test_point_request_serialization() {
         let request = PointRequest {
+            protocol_id: 0,
             gauge: TEST_GAUGE.parse().unwrap(),
             gauge_controller: TEST_ACCOUNT.parse().unwrap(),
             account_proof: vec![vec![0x01, 0x02], vec![0x03, 0x04]],
             bias_proof: vec![vec![0x05, 0x06]],
-            bias_slot: U256::from(42u64),
         };
 
         let json = serde_json::to_string(&request).unwrap();
         let deserialized: PointRequest = serde_json::from_str(&json).unwrap();
 
+        assert_eq!(deserialized.protocol_id, request.protocol_id);
         assert_eq!(deserialized.gauge, request.gauge);
         assert_eq!(deserialized.gauge_controller, request.gauge_controller);
         assert_eq!(deserialized.account_proof, request.account_proof);
         assert_eq!(deserialized.bias_proof, request.bias_proof);
-        assert_eq!(deserialized.bias_slot, request.bias_slot);
     }
 
     // =========================================================================
@@ -185,6 +187,7 @@ mod tests {
     #[test]
     fn test_account_request_serialization() {
         let request = AccountRequest {
+            protocol_id: 0,
             account: TEST_ACCOUNT.parse().unwrap(),
             gauge: TEST_GAUGE.parse().unwrap(),
             gauge_controller: TEST_ACCOUNT.parse().unwrap(),
@@ -192,24 +195,22 @@ mod tests {
             slope_proof: vec![vec![0x30, 0x40]],
             end_proof: vec![vec![0x50, 0x60]],
             last_vote_proof: Some(vec![vec![0x70, 0x80]]),
-            slope_slot: U256::from(100u64),
-            end_slot: U256::from(101u64),
-            last_vote_slot: Some(U256::from(102u64)),
         };
 
         let json = serde_json::to_string(&request).unwrap();
         let deserialized: AccountRequest = serde_json::from_str(&json).unwrap();
 
+        assert_eq!(deserialized.protocol_id, request.protocol_id);
         assert_eq!(deserialized.account, request.account);
         assert_eq!(deserialized.gauge, request.gauge);
-        assert_eq!(deserialized.slope_slot, request.slope_slot);
-        assert_eq!(deserialized.end_slot, request.end_slot);
-        assert_eq!(deserialized.last_vote_slot, request.last_vote_slot);
+        assert_eq!(deserialized.slope_proof, request.slope_proof);
+        assert_eq!(deserialized.last_vote_proof, request.last_vote_proof);
     }
 
     #[test]
     fn test_account_request_optional_last_vote() {
         let request = AccountRequest {
+            protocol_id: 5,
             account: TEST_ACCOUNT.parse().unwrap(),
             gauge: TEST_GAUGE.parse().unwrap(),
             gauge_controller: TEST_ACCOUNT.parse().unwrap(),
@@ -217,16 +218,13 @@ mod tests {
             slope_proof: vec![],
             end_proof: vec![],
             last_vote_proof: None,
-            slope_slot: U256::ZERO,
-            end_slot: U256::ZERO,
-            last_vote_slot: None,
         };
 
         let json = serde_json::to_string(&request).unwrap();
         let deserialized: AccountRequest = serde_json::from_str(&json).unwrap();
 
         assert!(deserialized.last_vote_proof.is_none());
-        assert!(deserialized.last_vote_slot.is_none());
+        assert_eq!(deserialized.protocol_id, 5);
     }
 
     // =========================================================================

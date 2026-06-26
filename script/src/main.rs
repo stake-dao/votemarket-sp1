@@ -210,6 +210,7 @@ async fn main() {
             build_input_from_rpc(
                 state_root,
                 epoch,
+                host_input.protocol,
                 host_input.gauge_controller,
                 &requests,
                 proof,
@@ -225,6 +226,7 @@ async fn main() {
             build_input_from_toolkit(
                 state_root,
                 epoch,
+                host_input.protocol,
                 host_input.gauge_controller,
                 &requests,
                 bundle,
