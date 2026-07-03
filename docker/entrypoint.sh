@@ -19,6 +19,12 @@ fix_permissions() {
     if [ -d /workspace/target ]; then
         chown -R ubuntu:ubuntu /workspace/target 2>/dev/null || true
     fi
+
+    # Pre-create the host-visible ELF export dir as root: on Linux hosts the
+    # bind-mounted /workspace is owned by the host uid, so the builder user
+    # cannot mkdir inside it (CI failure mode; macOS Docker is permissive)
+    mkdir -p /workspace/program/elf
+    chown ubuntu:ubuntu /workspace/program/elf
 }
 
 # Run permission fixes
@@ -32,7 +38,12 @@ run_as_builder() {
 case "$1" in
     build-guest)
         echo -e "${YELLOW}Building guest circuit...${NC}"
-        run_as_builder bash -c 'cd /workspace/program && cargo prove build'
+        # SP1 v6 writes the ELF under target/, which is a named volume invisible
+        # to the host. Export it to the bind-mounted program/elf/ so host-side
+        # tooling (and the host binary's primary ELF probe path) can use it.
+        run_as_builder bash -c 'cd /workspace/program && cargo prove build \
+            && cp /workspace/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/program /workspace/program/elf/riscv64im-succinct-zkvm-elf \
+            && echo "ELF exported to program/elf/riscv64im-succinct-zkvm-elf"'
         ;;
 
     vkey)
@@ -43,8 +54,10 @@ case "$1" in
     vkey-verify)
         echo -e "${YELLOW}Building guest circuit and verifying VKEY...${NC}"
 
-        # Build the guest first
-        gosu ubuntu bash -c 'cd /workspace/program && cargo prove build'
+        # Build the guest first (and export the ELF to the host-visible dir,
+        # same as the build-guest case)
+        gosu ubuntu bash -c 'cd /workspace/program && cargo prove build \
+            && cp /workspace/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/program /workspace/program/elf/riscv64im-succinct-zkvm-elf'
 
         # Extract VKEY and capture output
         VKEY_OUTPUT=$(gosu ubuntu bash -c 'cd /workspace/script && VKEY_ONLY=true cargo run --release 2>&1')
