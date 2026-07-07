@@ -18,6 +18,14 @@ This document provides in-depth technical details about the Votemarket SP1 ZK ve
   - [Parallel Verification Paths](#parallel-verification-paths)
   - [Single-Epoch Batching](#single-epoch-batching)
   - [Prover Infrastructure](#prover-infrastructure)
+- [Security Analysis: ZK vs MPT Attack Surface](#security-analysis-zk-vs-mpt-attack-surface)
+  - [Shared Root of Trust](#shared-root-of-trust)
+  - [What the ZK Path Removes](#what-the-zk-path-removes)
+  - [What the ZK Path Adds](#what-the-zk-path-adds)
+  - [Malicious-Actor Matrix](#malicious-actor-matrix)
+  - [Anticipated Objections](#anticipated-objections)
+  - [Failure Modes and Blast Radius](#failure-modes-and-blast-radius)
+  - [Open Items](#open-items)
 - [Integration with Other Repositories](#integration-with-other-repositories)
 - [Future Evolution](#future-evolution)
 - [Glossary](#glossary)
@@ -108,9 +116,9 @@ The current Votemarket implementation uses **on-chain MPT verification**:
 
 | Metric                | MPT (Before) | ZK (After)      | Improvement      |
 | --------------------- | ------------ | --------------- | ---------------- |
-| Calldata per claim    | ~3KB         | ~10 bytes       | **300x smaller** |
+| Calldata per claim    | ~3-10KB      | ~256 bytes      | **~12-40x smaller** |
 | Max claims per tx     | ~40          | **Unlimited\*** | **Unbounded**    |
-| Gas cost (100 claims) | ~5M gas      | ~400k gas       | **12x cheaper**  |
+| Gas cost (100 claims) | ~25M gas     | ~5.3M gas       | **~5x cheaper**  |
 | User experience       | Multiple txs | Single tx       | **Much better**  |
 
 \*Practically limited by public values encoding, but can handle 500+ claims easily.
@@ -178,8 +186,10 @@ The ZK approach uses `ZKVerifier.verifyAndInsert(proofBytes, publicValues)`:
 │   ├── PointResult (per gauge):                                              │
 │   │   ├── gauge: 32 bytes (address padded)                                  │
 │   │   ├── epoch: 32 bytes                                                   │
-│   │   └── bias: 32 bytes                                                    │
-│   │   └── Subtotal: ~96 bytes per gauge                                     │
+│   │   ├── bias: 32 bytes                                                    │
+│   │   ├── protocolId: 32 bytes (uint8 padded)                               │
+│   │   └── gaugeController: 32 bytes (address padded)                        │
+│   │   └── Subtotal: ~160 bytes per gauge                                    │
 │   │                                                                         │
 │   └── AccountResult (per user):                                             │
 │       ├── account: 32 bytes (address padded)                                │
@@ -187,11 +197,13 @@ The ZK approach uses `ZKVerifier.verifyAndInsert(proofBytes, publicValues)`:
 │       ├── epoch: 32 bytes                                                   │
 │       ├── slope: 32 bytes                                                   │
 │       ├── end: 32 bytes                                                     │
-│       └── lastVote: 32 bytes                                                │
-│       └── Subtotal: ~192 bytes per user                                     │
+│       ├── lastVote: 32 bytes                                                │
+│       ├── protocolId: 32 bytes (uint8 padded)                               │
+│       └── gaugeController: 32 bytes (address padded)                        │
+│       └── Subtotal: ~256 bytes per user                                     │
 │                                                                             │
 │   FORMULA:                                                                  │
-│   Total = proof_size + 64 + (96 × gauges) + (192 × users)                   │
+│   Total = proof_size + 64 + (160 × gauges) + (256 × users)                  │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -202,19 +214,19 @@ The ZK approach uses `ZKVerifier.verifyAndInsert(proofBytes, publicValues)`:
 
 | Users | Gauges | MPT Calldata | ZK (Groth16) | ZK (PLONK) | Improvement |
 | ----- | ------ | ------------ | ------------ | ---------- | ----------- |
-| 1     | 1      | ~10 KB       | ~0.5 KB      | ~1.0 KB    | **10-20x**  |
-| 10    | 5      | ~100 KB      | ~2.7 KB      | ~3.3 KB    | **30-37x**  |
-| 50    | 10     | ~500 KB ❌   | ~11 KB       | ~11.5 KB   | **43-45x**  |
-| 100   | 20     | ~1 MB ❌     | ~22 KB       | ~22.5 KB   | **45-46x**  |
-| 200   | 30     | ~2 MB ❌     | ~44 KB       | ~44.5 KB   | **45x**     |
+| 1     | 1      | ~10 KB       | ~0.7 KB      | ~1.3 KB    | **8-14x**   |
+| 10    | 5      | ~100 KB      | ~3.7 KB      | ~4.2 KB    | **24-27x**  |
+| 50    | 10     | ~500 KB ❌   | ~14.7 KB     | ~15.3 KB   | **33-34x**  |
+| 100   | 20     | ~1 MB ❌     | ~29 KB       | ~29.7 KB   | **34x**     |
+| 200   | 30     | ~2 MB ❌     | ~56 KB       | ~57 KB     | **35x**     |
 
 ❌ = Exceeds transaction size limit (~128 KB)
 
-**Key Insight**: The ZK proof is constant-size (~256-800 bytes), so adding more users only adds ~192 bytes per user instead of ~10 KB per user.
+**Key Insight**: The ZK proof is constant-size (~256-800 bytes), so adding more users only adds ~256 bytes per user instead of ~10 KB per user.
 
 ```
-MPT scaling:    calldata ≈ N × 10 KB           (linear, steep slope)
-ZK scaling:     calldata ≈ 0.5 KB + N × 0.2 KB (linear, gentle slope)
+MPT scaling:    calldata ≈ N × 10 KB            (linear, steep slope)
+ZK scaling:     calldata ≈ 0.7 KB + N × 0.26 KB (linear, gentle slope)
 ```
 
 #### Gas Cost Comparison
@@ -246,7 +258,7 @@ ZK scaling:     calldata ≈ 0.5 KB + N × 0.2 KB (linear, gentle slope)
 | Proving time     | Faster                         | Slightly slower         |
 | Best for         | Production (smallest proofs)   | Development/flexibility |
 
-Only **PLONK** is supported for the moment.
+Both are wired in the host (`just prove` for PLONK, `just prove-groth16`). **PLONK** is the production default (`PROOF_KIND=plonk`).
 
 ## Architecture
 
@@ -381,17 +393,22 @@ struct ZKOutput {
 }
 
 struct PointResult {
-    address gauge;     // Gauge address
-    uint256 epoch;     // Epoch for this data point
-    uint256 bias;      // Total votes (points_weight[gauge][epoch].bias)
+    address gauge;           // Gauge address
+    uint256 epoch;           // Epoch for this data point
+    uint256 bias;            // Total votes (points_weight[gauge][epoch].bias)
+    uint8   protocolId;      // Protocol enum value used for slot derivation
+    address gaugeController; // Account the proof was verified against
 }
 
 struct AccountResult {
-    address account;   // Voter address
-    address gauge;     // Gauge voted for
-    uint256 slope;     // Vote decay rate
-    uint256 end;       // When vote expires
-    uint256 lastVote;  // Last vote timestamp (0 for Pendle)
+    address account;         // Voter address
+    address gauge;           // Gauge voted for
+    uint256 epoch;           // Epoch for this data point
+    uint256 slope;           // Vote decay rate
+    uint256 end;             // When vote expires
+    uint256 lastVote;        // Last vote timestamp (0 for Pendle)
+    uint8   protocolId;      // Protocol enum value used for slot derivation
+    address gaugeController; // Account the proof was verified against
 }
 ```
 
@@ -399,11 +416,26 @@ The `proof_bytes` and `public_values` from the proof artifacts are what get subm
 
 ### Trust Model
 
-The ZK circuit receives a `state_root` as input and trusts it implicitly. It does not validate the state root against a block hash inside the circuit. Instead, **validation happens on-chain**: the `ZKVerifier` contract checks that the proof's `state_root` matches the one stored in the Oracle for the given epoch.
+The ZK circuit receives a `state_root` as input and trusts it implicitly. It does not validate the state root against a block hash inside the circuit. Instead, **validation happens on-chain**: the `ZKVerifier` contract checks that the proof's `state_root` matches the one stored in the Oracle for the given epoch (`_validateStateRoot`, reverting `EPOCH_NOT_SET` or `STATE_ROOT_MISMATCH`).
 
-This design reuses the existing trust infrastructure. The Oracle already stores validated block headers (including state roots) per epoch, populated by the L1→L2 bridge or authorized providers. By validating against the Oracle, the ZK path maintains the same security guarantees as the MPT path.
+This design reuses the existing trust anchor. The Oracle stores one block header per epoch, populated by a governance-authorized block-number provider (the same L1→L2 blockhash pipeline the MPT path relies on). The ZK path anchors on that same root of trust. It also introduces new trust assumptions of its own (proof-system soundness, the in-circuit MPT library, an owner-controlled verifier contract), analyzed exhaustively in [Security Analysis: ZK vs MPT Attack Surface](#security-analysis-zk-vs-mpt-attack-surface).
 
-**Storage-slot binding (in-circuit).** The circuit derives each storage slot itself from `(protocol_id, gauge, account, epoch)` using the canonical per-protocol layout, instead of trusting a host-supplied slot. This binds the committed labels (gauge / account / epoch) to the verified storage key: a value proven at one slot cannot be relabeled under another (a mismatched label resolves to an exclusion proof and reads zero). An unknown `protocol_id` is rejected (fail-closed), and the protocol's mapping slots are circuit constants, not request inputs. The host computes the same slots only to fetch Merkle proofs; it no longer passes them into the circuit. The `gauge_controller` account that the proof is verified against is still host-supplied — binding which account is proven is a separate, later hardening step.
+**What the circuit proves, exactly.** The proof statement is self-contained: "given this 32-byte `state_root` and this `epoch` (both prover-supplied), the account at `gauge_controller` exists in the state trie, and its storage holds value V at the slot canonically derived in-circuit from `(protocol_id, gauge, account, epoch)`". Everything else is deliberately NOT verified in-circuit and is delegated to on-chain checks:
+
+| Not verified in-circuit          | Delegated to                                             |
+| -------------------------------- | -------------------------------------------------------- |
+| State root belongs to a real block | On-chain compare vs `Oracle.epochBlockNumber(epoch)`   |
+| Chain identity (mainnet)         | Same anchor (only mainnet roots are registered)          |
+| Epoch matches the block timestamp | Same anchor (one block header per epoch)                |
+| `gauge_controller` is legitimate | On-chain `canonicalController` whitelist                 |
+
+The circuit commits no chain id, block number, or block hash. The `(state_root, epoch)` pair is the entire binding, and it holds because the Oracle stores exactly one header per epoch: a proof against the wrong root reverts `STATE_ROOT_MISMATCH`, a proof for an unregistered epoch reverts `EPOCH_NOT_SET`, and a result whose `epoch` field diverges from the committed header epoch reverts `EPOCH_MISMATCH`.
+
+**State-root semantics (differs from the legacy verifiers).** The circuit verifies the gauge-controller account proof against the full **block state root** and extracts the storage root internally. The legacy MPT verifiers instead overwrite `epochBlockNumber[epoch].stateRootHash` with the gauge controller's **storage root** before storing it (`Verifier.sol::_registerBlockHeader`). The two paths therefore cannot share a single Oracle epoch entry: the ZK path requires its epoch anchor to be registered with the true block state root. In the tested wiring, the ZK path runs against a dedicated Oracle where `ZKVerifier` is the sole authorized data provider, which also isolates ZK writes from MPT writes.
+
+**Storage-slot binding (in-circuit).** The circuit derives each storage slot itself from `(protocol_id, gauge, account, epoch)` using the canonical per-protocol layout, instead of trusting a host-supplied slot. This binds the committed labels (gauge / account / epoch) to the verified storage key: a value proven at one slot cannot be relabeled under another (a mismatched label resolves to an exclusion proof and reads zero). An unknown `protocol_id` is rejected (fail-closed), and the protocol's mapping slots are circuit constants, not request inputs. The host computes the same slots only to fetch Merkle proofs; it no longer passes them into the circuit.
+
+**Account binding (in-circuit commit + on-chain whitelist).** The `gauge_controller` account that each proof is verified against is host-supplied, but the circuit commits the `(protocol_id, gauge_controller)` pair into every result in the public values. On-chain, `ZKVerifier` maintains an owner-gated `canonicalController[protocolId]` whitelist and rejects any result whose committed controller does not match the canonical entry (or whose protocol entry is unset). A prover therefore cannot substitute an attacker-deployed contract whose storage mimics the gauge-controller layout: the proof would carry the wrong committed controller and revert `BAD_CONTROLLER`.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -426,8 +458,8 @@ This design reuses the existing trust infrastructure. The Oracle already stores 
 
 Rather than outputting raw storage slots (`address, slot, value`), the circuit outputs **semantic structs** that directly map to the Oracle's data model:
 
-- **PointResult**: Contains `gauge`, `epoch`, and `bias` (total votes for a gauge)
-- **AccountResult**: Contains `account`, `gauge`, `slope`, `end`, and `lastVote` (user's vote data)
+- **PointResult**: Contains `gauge`, `epoch`, and `bias` (total votes for a gauge), plus the binding pair `protocolId` / `gaugeController`
+- **AccountResult**: Contains `account`, `gauge`, `epoch`, `slope`, `end`, and `lastVote` (user's vote data), plus the binding pair `protocolId` / `gaugeController`
 
 This approach has several benefits:
 
@@ -520,6 +552,106 @@ Benefits of using the Prover Network:
 - **Cost efficiency**: Pay-per-proof model vs. fixed infrastructure costs
 
 The architecture supports switching to self-hosted proving later if latency or cost requirements change.
+
+## Security Analysis: ZK vs MPT Attack Surface
+
+This section is a factual comparison of the two verification paths, written for reviewers who know the MPT path and are evaluating whether the ZK path enlarges the attack surface. The honest answer is: the ZK path keeps the same root of trust, removes the on-chain Solidity MPT stack from its trusted computing base, and adds a set of new trust assumptions (proof-system soundness, an off-chain MPT library, an owner-controlled verifier contract, a permissioned relayer). Each is enumerated below with its exact bound. Nothing here claims the ZK path is strictly safer, it is a different trade with a known shape.
+
+### Shared Root of Trust
+
+Both paths anchor on the same two governance-controlled roots, so neither is "more trustless" at the foundation:
+
+1. **The per-epoch block anchor.** `Oracle.epochBlockNumber(epoch)` is written only by a governance-authorized block-number provider (`Oracle.sol:94-99`). Both paths accept whatever root that provider registers. A compromised provider forges data on either path.
+2. **Oracle governance.** `setAuthorizedDataProvider` is `onlyGovernance` (`Oracle.sol:138-140`), and `Oracle.insertPoint` / `insertAddressEpochData` have no overwrite guard at the Oracle layer. Governance can authorize an arbitrary writer and overwrite any slot on either path. This pre-existing full-trust root is unchanged by the ZK path.
+
+The Oracle write surface of the ZK path is a strict subset of the MPT path's: `ZKVerifier` calls only `insertPoint` and `insertAddressEpochData`, never `insertBlockNumber` (the MPT verifier registers block headers, the ZK verifier does not).
+
+### What the ZK Path Removes
+
+For ZK writes, the entire on-chain Solidity MPT/RLP stack (`StateProofVerifier`, `MerklePatriciaProofVerifier`, `RLPReader`, `RLPDecoder`) is out of the trusted computing base. `ZKVerifier` imports `StateProofVerifier` only for the `BlockHeader` struct type and never calls its verification functions. A bug in the Solidity MPT library affects only the MPT path.
+
+The exploitability profile also changes. The MPT write entrypoints (`setPointData`, `setAccountData`, `setBlockData`) are permissionless, so a soundness bug in the Solidity MPT verification is exploitable by anyone, immediately. On the ZK path, submission is gated by the relayer allowlist (v1), so a circuit soundness bug requires an allowlisted submitter to exploit.
+
+### What the ZK Path Adds
+
+Enumerated honestly, in decreasing order of concern:
+
+**1. In-circuit MPT library soundness (`eth_trie` 0.4.0).** The circuit verifies account and storage proofs with the third-party Rust crate [`eth_trie`](https://github.com/ethereum/eth-trie.rs) (`program/src/main.rs:225`, `:252`), replacing the audited in-repo Solidity. The SNARK proves the guest **executed faithfully**, not that the guest's MPT logic is **correct**: a false-accept bug or backdoor in `eth_trie` would produce a cryptographically valid proof over wrong data that passes every on-chain check. This is the single most severe new surface, because the failure mode is silent (masked by a valid proof) where a Solidity bug is at least on-chain-inspectable. The crate version is pinned in `Cargo.lock` with checksums, which defends against registry substitution but not against the pinned version itself being buggy. Bound: a false-accept still cannot escape the on-chain binds, so forged values are limited to the whitelisted controller and the registered `(state_root, epoch)`. An independent review of the circuit and of `eth_trie`'s proof verification is an open item (see [Open Items](#open-items)).
+
+**2. Proof-system soundness (SP1 zkVM + BN254 PLONK/Groth16 wrap).** On-chain acceptance rests entirely on `SP1_VERIFIER.verifyProof` succeeding. There is no on-chain re-execution of the guest logic. If SP1's STARK, its recursion, or the BN254 SNARK wrap (including PLONK's universal KZG setup or Groth16's circuit-specific setup) were unsound, a forged proof would pass. These are external assumptions inherited from Succinct's stack, they have no analogue on the MPT path.
+
+**3. The Succinct verifier gateway (third-party, upgradeable).** The deployed `SP1_VERIFIER` is Succinct's verifier gateway at `0x3B6041173B80E77f038f3F2C0f9744f04837185e` (pinned in `@address-book` `ExternalUniversal.sol`). Its address is immutable in `ZKVerifier`, but the gateway itself routes `proofBytes` by a 4-byte version selector to Succinct-managed verifier implementations and is administered by Succinct. Gateway governance can add or freeze routes. A malicious route breaks soundness, a frozen route breaks liveness. The MPT path has no external upgradeable dependency.
+
+**4. The `ZKVerifier` owner (a new full-forgery role).** The legacy MPT verifier is immutable and ownerless: every parameter is set at construction, there are no admin functions, zero post-deploy admin surface. `ZKVerifier` is `Ownable` with three levers, each a single transaction with no timelock:
+
+- `updateProgramVKey`: swap the accepted circuit. A compromised owner sets a vKey for an attacker circuit, sets `canonicalController` to any address, and can then write arbitrary values that pass every check (the state root is public, so the attacker circuit simply commits the real one).
+- `setAuthorizedRelayer`: widen or empty the submitter set (the empty set is the documented emergency kill switch).
+- `setCanonicalController`: repoint a protocol at any account.
+
+This is the largest governance-surface delta versus the MPT path and the main reason the v1 deployment is a trusted-submitter shadow mode. The deployed vKey matching the audited `.vkey.prod` is a **procedural** guarantee (deploy-time argument, CI-verified in the repo), not an on-chain invariant.
+
+**5. The relayer allowlist (permissioned submission).** MPT submission is permissionless, ZK submission is not. The allowlist gates WHO can call, not WHAT gets written: a malicious allowlisted relayer still cannot insert false data, because the proof, state-root, controller, and epoch checks all bind independently. Its effect is therefore liveness and censorship (a relayer set that stalls halts ZK writes), plus the exploit-population narrowing noted above. The permissionless MPT path remains as fallback.
+
+### Malicious-Actor Matrix
+
+Worst case per compromised component. "Liveness" means proofs fail to be produced or revert on-chain, no wrong value is accepted.
+
+| Compromised component | Worst case | Why it is bounded |
+| --- | --- | --- |
+| Ethereum RPC | Liveness | Fake state root fails `STATE_ROOT_MISMATCH` on-chain |
+| Python toolkit subprocess | Liveness | Proofs re-verified in-circuit, slots re-derived in-circuit |
+| Host machine / `INPUT_JSON` / env vars | Liveness + selection | Committed values all re-verified, but host chooses WHICH requests to prove (censorship, not forgery) |
+| Guest ELF substitution (`SP1_ELF_PATH`) | Liveness | Different ELF yields a different vKey, `verifyProof` rejects |
+| Prover network operator | Liveness (withhold) | Cannot forge (soundness), inputs are public Ethereum data so nothing secret is learned |
+| `NETWORK_PRIVATE_KEY` theft | Financial loss on the prover network | No on-chain authority, unrelated to the relayer allowlist |
+| Allowlisted relayer | Liveness (censor) | Cannot alter proven values, `VALUE_DIVERGENCE` blocks overwriting existing entries with different values |
+| `ZKVerifier` owner key | **Full forgery** | Not bounded. Mitigations: v1 shadow mode, multisig/timelock ownership (open item) |
+| Block-number provider | **Full forgery (both paths)** | Pre-existing shared trust root, unchanged by ZK |
+| Oracle governance | **Full forgery (both paths)** | Pre-existing shared trust root, unchanged by ZK |
+
+### Anticipated Objections
+
+Each objection a reviewer coming from the MPT path is likely to raise, with the factual status.
+
+**"We replace audited Solidity math with a black-box circuit."** Partially true. The on-chain trust surface stays small and auditable (decode, state-root match, controller whitelist, epoch match, divergence guard, all plain Solidity in `ZKVerifier.sol`). The circuit is not a black box: it is ~750 lines of Rust logic (plus ~1300 lines of tests) reproducibly compiled in Docker, with adversarial tests for relabeling, cross-protocol substitution, exclusion proofs, unknown protocol ids, and a golden ABI fixture. What IS true: the guest circuit and its `eth_trie` dependency have not been through an external audit yet, unlike the Solidity path. That audit is an open item, not a solved problem.
+
+**"The vKey is a magic number nobody can re-derive."** False, with a condition. `just vkey-verify` rebuilds the guest ELF inside the pinned Docker image (Rust 1.88.0, SP1 v6.3.0, `linux/amd64`, exact `=x.y.z` dependency pins, committed `Cargo.lock`) and byte-compares the derived vKey against `.vkey.prod` (`0x0034fee7efda3fdd9858f19d841d54ed4e081102a7ddb779551983b9f61de399`). CI runs this on every build. Any reviewer can re-derive it, provided they use the pinned toolchain (native builds can legitimately diverge).
+
+**"The owner can swap the vKey and forge everything."** True, and stated as such in item 4 above. A single owner transaction can redirect proof acceptance to an arbitrary circuit. This is the strongest argument of the skeptical position and the reason for the v1 trusted-submitter shadow mode. The mitigation path is operational (multisig plus timelock on the owner) and is listed in [Open Items](#open-items). Note the MPT path is unaffected by any `ZKVerifier` owner action.
+
+**"Succinct's verifier contract is a third-party dependency we don't control."** True. See item 3 above for the exact shape (upgradeable gateway, Succinct-administered). The exposure is new versus MPT and cannot be waved away, only bounded: verification liveness needs the deployed contract, not Succinct the company, and the MPT path remains as an independent fallback for both liveness and (if the gateway were compromised) integrity triage.
+
+**"The prover network sees and could tamper with our data."** Tampering is prevented by proof verification: a proof over altered inputs either fails `verifyProof` or commits values that are genuinely true for the registered state root. Seeing is a non-issue in this application: every input is public Ethereum state. The ZK property used here is succinctness, not confidentiality. The residual power of the network operator is withholding service.
+
+**"A bug in the Rust MPT crate is invisible until exploited."** True, this is item 1 above and the most serious objection. It deserves a real answer, not reassurance: the failure mode is a valid-looking proof over false data, detection would come only from cross-checking against the MPT path or off-chain monitoring, and the mitigation is an independent audit plus the v1 shadow mode where ZK writes are compared against MPT results before being trusted.
+
+**"Mock mode or dev builds could leak into production."** Structurally impossible on-chain: mock mode (`client.execute()`) produces no proof at all, and a dev-built ELF has a different vKey, so `SP1_VERIFIER.verifyProof` rejects anything it signs. The failure mode of a wrong deployment is total liveness failure (every proof rejected), not forgery.
+
+**"The relayer is a centralization point the MPT path does not have."** True, see item 5. Liveness and censorship only, with the permissionless MPT path as fallback. It is also deliberate v1 defense-in-depth: it narrows who could exploit a hypothetical circuit soundness bug while the system runs in shadow mode.
+
+**"What if Succinct disappears?"** New proof generation stalls (the Prover Network is the current proving backend). Already-registered data and claims are unaffected, on-chain verification needs only the deployed gateway contract, the MPT path keeps working permissionlessly, and the architecture supports self-hosted proving (the guest ELF and host are in this repo).
+
+**"How do we even audit this circuit?"** The audit surface is: `program/src/main.rs` (~270 lines of logic plus ~900 lines of tests), `shared/src/protocol.rs` (~360 lines, slot derivation), `shared/src/lib.rs` (~125 lines, boundary types), the `eth_trie` crate's `verify_proof`, and the ABI encoding contract with `ZKVerifier._decodePublicValues`. The build is reproducible byte-for-byte via Docker, so an auditor can bind the reviewed source to the deployed vKey. The adversarial test suite (relabel-to-zero, cross-protocol, fail-closed paths) documents the intended security properties as executable assertions.
+
+### Failure Modes and Blast Radius
+
+**Circuit soundness bug (ZK path).** A crafted proof could commit false values for the whitelisted controller under the registered state root. In v1, only an allowlisted relayer can submit it, and `VALUE_DIVERGENCE` prevents overwriting slots already filled with different values. Detection: divergence against the MPT path during shadow mode.
+
+**Solidity MPT library bug (MPT path).** Exploitable by anyone immediately (permissionless entrypoints), for any gauge or account. No allowlist narrows the population.
+
+**Cross-path slot poisoning.** The first path to write a `(gauge, epoch)` or `(account, gauge, epoch)` slot locks it: the MPT path reverts `ALREADY_REGISTERED` on any rewrite, the ZK path no-ops on identical values and reverts `VALUE_DIVERGENCE` on different ones. A wrong value written by one path is sticky at the verifier layer. Recovery exists only through governance authorizing a direct Oracle data provider (the Oracle itself has no overwrite guard). The tested deployment avoids the shared-state case entirely by giving the ZK path a dedicated Oracle.
+
+**Redundant-submission semantics (ZK only).** Same-value re-submission is a silent no-op instead of MPT's `ALREADY_REGISTERED` revert. Raw committed biases of 0 and 1 are equivalent at the Oracle layer (both stored as 1, matching the MPT rollover guard). Deliberate, bounded, and documented in `ZKVerifier.sol`.
+
+### Open Items
+
+Honest list of what is not yet closed, for the review discussion:
+
+1. **External audit of the guest circuit and of `eth_trie`'s proof verification.** The adversarial test suite is in-repo and self-authored. Independent review should precede any move from shadow mode to a trusted ZK path (and is a hard prerequisite for a future permissionless v2).
+2. **Owner hardening.** `ZKVerifier` ownership should sit behind a multisig and ideally a timelock before the ZK path feeds real claims. `updateProgramVKey` in one EOA transaction is the single sharpest lever in the system.
+3. **ZK block registration.** The ZK path needs an epoch anchor carrying the true block state root, which the legacy `setBlockData` flow does not produce (it stores the gauge-controller storage root). The production block-registration wiring for ZK epochs must be specified and reviewed.
+4. **vKey deploy binding is procedural.** CI proves `.vkey.prod` matches the source, but nothing on-chain ties the deployed `vKey` to `.vkey.prod`. The deploy script argument and any later `updateProgramVKey` call must be verified against the repo value as an operational checklist item.
+5. **Public-values framing.** `_decodePublicValues` skips the first 32 bytes assuming SP1's ABI struct-offset framing. The contract is pinned by a golden fixture test on the Rust side and by the pinned SP1 version, but nothing on-chain asserts the offset word. An SP1 upgrade that changes commit framing must be treated as a breaking, coordinated change (it would also change the vKey).
 
 ## Integration with Other Repositories
 
