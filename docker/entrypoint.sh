@@ -13,7 +13,6 @@ NC='\033[0m' # No Color
 fix_permissions() {
     # Fix ownership of cargo directories
     chown -R ubuntu:ubuntu /home/ubuntu/.cargo 2>/dev/null || true
-    chown -R ubuntu:ubuntu /home/ubuntu/.sp1 2>/dev/null || true
 
     # Fix ownership of workspace target directory if it exists
     if [ -d /workspace/target ]; then

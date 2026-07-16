@@ -18,7 +18,15 @@ services:
       - cargo-registry:/home/ubuntu/.cargo/registry
       - cargo-git:/home/ubuntu/.cargo/git
       - target-cache:/workspace/target
-      - sp1-cache:/home/ubuntu/.sp1
+      # ~/.sp1 is deliberately NOT a volume. sp1up installs the toolchain into a
+      # randomly named directory and points ~/.rustup/toolchains/succinct at it,
+      # but ~/.rustup lives only in the image. A volume over ~/.sp1 masks the
+      # image's copy, so once the sp1up layer re-runs and mints a new name, the
+      # symlink dangles and every build dies on an unrelated rustup error.
+      # If local proof verification is ever enabled in Docker (every recipe
+      # currently forces VERIFY_PROOF=false), SP1 downloads multi-GB gnark
+      # artifacts to ~/.sp1/circuits and those are worth caching: mount that
+      # subpath alone (sp1-circuits:/home/ubuntu/.sp1/circuits), never ~/.sp1.
     environment:
       - CARGO_HOME=/home/ubuntu/.cargo
       - RUST_BACKTRACE=1
@@ -31,4 +39,3 @@ volumes:
   cargo-registry:
   cargo-git:
   target-cache:
-  sp1-cache:

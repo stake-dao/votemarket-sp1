@@ -31,9 +31,14 @@ vkey:
 vkey-verify:
     docker compose -f docker/docker-compose.yml run --rm sp1 vkey-verify
 
-# Clean Docker caches (cargo, SP1 toolchain, build artifacts)
+# Clean Docker caches (cargo registry/git, build artifacts)
+# The explicit sp1-cache removal is transitional: that volume is no longer
+# declared, so `down -v` cannot reach it and it would linger forever on machines
+# that predate its removal. Drop this line once the team has cycled past the
+# release that dropped the volume (~2 releases).
 clean:
     docker compose -f docker/docker-compose.yml down -v
+    -docker volume rm -f docker_sp1-cache 2>/dev/null
     @echo "Docker volumes cleaned"
 
 # ============================================================================

@@ -53,8 +53,7 @@ ENV PATH="/home/ubuntu/.local/bin:${PATH}"
 # Pre-create directories that will be mounted as volumes
 # This ensures correct ownership when volumes are first created
 RUN mkdir -p /home/ubuntu/.cargo/registry \
-    /home/ubuntu/.cargo/git \
-    /home/ubuntu/.sp1
+    /home/ubuntu/.cargo/git
 
 # Switch back to root for entrypoint (will drop privileges after fixing permissions)
 USER root
