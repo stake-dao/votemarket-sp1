@@ -63,8 +63,8 @@ pub struct HostInput {
 impl HostInput {
     /// Load host input from environment variables.
     pub fn from_env() -> Result<Self, String> {
-        let chain_id = parse_optional_u64_env("CHAIN_ID").unwrap_or(1);
-        let block_number = parse_optional_u64_env("BLOCK_NUMBER");
+        let chain_id = parse_optional_u64_env("CHAIN_ID")?.unwrap_or(1);
+        let block_number = parse_optional_u64_env("BLOCK_NUMBER")?;
         let protocol_name = env::var("PROTOCOL")
             .unwrap_or_else(|_| "curve".to_string())
             .to_lowercase();
@@ -76,10 +76,10 @@ impl HostInput {
         })?;
         let gauge = parse_address_env("GAUGE")?;
         let account = parse_address_env("ACCOUNT")?;
-        let epoch_override = parse_optional_u64_env("EPOCH");
+        let epoch_override = parse_optional_u64_env("EPOCH")?;
 
         // Gauge controller comes from protocol defaults, with optional env override
-        let gauge_controller = parse_optional_address_env("GAUGE_CONTROLLER")
+        let gauge_controller = parse_optional_address_env("GAUGE_CONTROLLER")?
             .or_else(|| protocol.gauge_controller())
             .ok_or_else(|| {
                 format!(

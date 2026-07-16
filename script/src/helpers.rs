@@ -88,8 +88,29 @@ pub fn require_env(name: &str) -> Result<String, String> {
     env::var(name).map_err(|_| format!("missing {name} env var"))
 }
 
-pub fn parse_optional_u64_env(name: &str) -> Option<u64> {
-    env::var(name).ok().and_then(|value| parse_u64(&value).ok())
+/// Parse a u64 env-var value, prefixing errors with the variable name.
+///
+/// Split from its env wrapper so the malformed path can be tested without
+/// touching the process environment (same rationale as `parse_positive_u64_str`).
+pub fn parse_named_u64(name: &str, value: &str) -> Result<u64, String> {
+    parse_u64(value).map_err(|err| format!("{name}: {err}"))
+}
+
+/// Read an optional u64 setting from the environment.
+///
+/// Only "not set" and "set to empty" are `Ok(None)`: the `.env` template
+/// documents the bare `NAME=` shape as "use the default", and an empty value
+/// carries no override intent. A malformed or non-unicode value is a hard
+/// error: collapsing it into `None` would silently prove against the caller's
+/// default (chain 1, latest block, timestamp-derived epoch) instead of what
+/// the operator asked for.
+pub fn parse_optional_u64_env(name: &str) -> Result<Option<u64>, String> {
+    match env::var(name) {
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(env::VarError::NotUnicode(_)) => Err(format!("{name}: value is not valid unicode")),
+        Ok(raw) if raw.is_empty() => Ok(None),
+        Ok(raw) => parse_named_u64(name, &raw).map(Some),
+    }
 }
 
 pub fn parse_address_env(name: &str) -> Result<Address, String> {
@@ -97,10 +118,23 @@ pub fn parse_address_env(name: &str) -> Result<Address, String> {
     Address::from_str(&value).map_err(|err| format!("invalid {name}: {err}"))
 }
 
-pub fn parse_optional_address_env(name: &str) -> Option<Address> {
-    env::var(name)
-        .ok()
-        .and_then(|value| Address::from_str(&value).ok())
+/// Parse an address env-var value, prefixing errors with the variable name.
+pub fn parse_named_address(name: &str, value: &str) -> Result<Address, String> {
+    Address::from_str(value).map_err(|err| format!("{name}: {err}"))
+}
+
+/// Read an optional address setting from the environment.
+///
+/// Same contract as `parse_optional_u64_env` (unset and empty are `Ok(None)`):
+/// a typoed override must stop the run, not silently fall back (for
+/// `GAUGE_CONTROLLER`, to the protocol's default controller).
+pub fn parse_optional_address_env(name: &str) -> Result<Option<Address>, String> {
+    match env::var(name) {
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(env::VarError::NotUnicode(_)) => Err(format!("{name}: value is not valid unicode")),
+        Ok(raw) if raw.is_empty() => Ok(None),
+        Ok(raw) => parse_named_address(name, &raw).map(Some),
+    }
 }
 
 pub fn parse_optional_bool_env(name: &str) -> Option<bool> {
@@ -132,13 +166,13 @@ pub fn parse_positive_u64_str(value: &str) -> Result<u64, String> {
 
 /// Read a strictly-positive integer setting from the environment.
 ///
-/// A malformed value is a hard error, unlike `parse_optional_u64_env`, which
-/// swallows one and falls back to its caller's default. That is deliberate here: a
-/// typo in a deadline would otherwise silently disarm the bound it was meant to
-/// set, which is the opposite of what the operator asked for.
+/// A malformed value is a hard error: a typo in a deadline would otherwise
+/// silently disarm the bound it was meant to set, which is the opposite of
+/// what the operator asked for.
 pub fn parse_positive_u64_env(name: &str) -> Result<Option<u64>, String> {
     match env::var(name) {
-        Err(_) => Ok(None),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(env::VarError::NotUnicode(_)) => Err(format!("{name}: value is not valid unicode")),
         Ok(raw) => parse_positive_u64_str(&raw)
             .map(Some)
             .map_err(|err| format!("{name}: {err}")),
@@ -429,6 +463,12 @@ mod tests {
     #[test]
     fn test_parse_u64_invalid() {
         assert!(parse_u64("not_a_number").is_err());
+    }
+
+    #[test]
+    fn test_parse_u64_empty_and_bare_prefix() {
+        assert!(parse_u64("").is_err());
+        assert!(parse_u64("0x").is_err());
     }
 
     #[test]
@@ -734,5 +774,55 @@ mod tests {
     fn test_parse_positive_u64_str_rejects_zero() {
         let err = parse_positive_u64_str("0").expect_err("zero must be rejected");
         assert!(err.contains("positive"), "{err}");
+    }
+
+    ///////////////////////////////////////////////
+    // NAMED OPTIONAL VALUE TESTS
+    ///////////////////////////////////////////////
+
+    // Tested on the pure named layer for the same ENV_MUTEX reason as
+    // `parse_positive_u64_str`: a typo must surface as an error naming the
+    // variable, never fall back to the caller's default.
+    #[test]
+    fn test_parse_named_u64_rejects_malformed_and_names_the_variable() {
+        let err = parse_named_u64("CHAIN_ID", "abc").expect_err("must reject");
+        assert!(err.contains("CHAIN_ID"), "{err}");
+        let err = parse_named_u64("EPOCH", "").expect_err("must reject");
+        assert!(err.contains("EPOCH"), "{err}");
+    }
+
+    #[test]
+    fn test_parse_named_u64_accepts_decimal_hex_and_zero() {
+        assert_eq!(parse_named_u64("BLOCK_NUMBER", "21134723").unwrap(), 21134723);
+        assert_eq!(parse_named_u64("BLOCK_NUMBER", "0x1427d83").unwrap(), 21134723);
+        assert_eq!(parse_named_u64("EPOCH", "0").unwrap(), 0);
+    }
+
+    #[test]
+    fn test_parse_named_address_rejects_malformed_and_names_the_variable() {
+        let err = parse_named_address("GAUGE_CONTROLLER", "0xtypo").expect_err("must reject");
+        assert!(err.contains("GAUGE_CONTROLLER"), "{err}");
+    }
+
+    #[test]
+    fn test_parse_named_address_accepts_a_valid_address() {
+        assert_eq!(
+            parse_named_address("GAUGE", "0x26f7786de3e6d9bd37fcf47be6f2bc455a21b74a").unwrap(),
+            address!("26f7786de3e6d9bd37fcf47be6f2bc455a21b74a")
+        );
+    }
+
+    // Reading an unset variable is race-free (only env writes race the
+    // config.rs mutex-guarded tests), so the Ok(None) path is safe to test.
+    #[test]
+    fn test_optional_env_wrappers_unset_is_ok_none() {
+        assert_eq!(
+            parse_optional_u64_env("VOTEMARKET_SP1_TEST_UNSET_U64"),
+            Ok(None)
+        );
+        assert_eq!(
+            parse_optional_address_env("VOTEMARKET_SP1_TEST_UNSET_ADDR"),
+            Ok(None)
+        );
     }
 }
