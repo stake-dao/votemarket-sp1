@@ -5,6 +5,10 @@ FROM ubuntu:24.04
 
 # Build arguments
 ARG SP1_VERSION=v6.3.0
+# Pinned: the toolkit runs as a subprocess of the prover and is handed the RPC URL,
+# so an unpinned floating version is an unreviewed dependency on the proof path.
+# Keep in lockstep with the `toolkit-setup` recipe in the justfile.
+ARG TOOLKIT_VERSION=2.0.0
 
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
@@ -42,7 +46,8 @@ RUN /home/ubuntu/.sp1/bin/sp1up --version ${SP1_VERSION}
 ENV PATH="/home/ubuntu/.sp1/bin:${PATH}"
 
 # Install votemarket-toolkit for proof data fetching
-RUN python3 -m pip install --user --break-system-packages votemarket-toolkit
+RUN python3 -m pip install --user --break-system-packages \
+    votemarket-toolkit==${TOOLKIT_VERSION}
 ENV PATH="/home/ubuntu/.local/bin:${PATH}"
 
 # Pre-create directories that will be mounted as volumes

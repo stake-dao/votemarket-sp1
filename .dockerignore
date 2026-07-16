@@ -1,0 +1,18 @@
+# Keep secrets out of the image build context. The Dockerfile only COPYs
+# rust-toolchain.toml and docker/entrypoint.sh today, so this is defense in depth
+# against a future COPY picking one up. Note this covers the build context only:
+# docker-compose bind-mounts the repo at /workspace at run time, so script/.env is
+# still readable inside the container regardless of this file.
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+
+# Build artifacts and caches: never needed in the context, and large.
+target/
+.venv/
+script/output/
+.git/
+.claude/

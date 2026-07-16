@@ -39,6 +39,14 @@ sol! {
 }
 
 ///////////////////////////////////////////////
+// CONSTANTS
+///////////////////////////////////////////////
+
+/// Epoch granularity. Votemarket epochs are week boundaries: the host floors a
+/// block timestamp to this, and the on-chain oracle keys its data the same way.
+pub const ONE_WEEK_SECONDS: u64 = 7 * 24 * 60 * 60;
+
+///////////////////////////////////////////////
 // HEX FORMATTING
 ///////////////////////////////////////////////
 

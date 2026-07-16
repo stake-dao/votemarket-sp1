@@ -1,6 +1,10 @@
 # Votemarket SP1 Verifier - Justfile
 # Run `just --list` to see all available commands
 
+# Pinned toolkit version. Keep in lockstep with TOOLKIT_VERSION in docker/Dockerfile
+# so the local venv and the Docker image run the same proof-data source.
+TOOLKIT_VERSION := "2.0.0"
+
 # Default recipe: show help
 default:
     @just --list
@@ -80,7 +84,7 @@ prove-core input_file:
 toolkit-setup:
     python3 -m venv .venv
     .venv/bin/pip install --upgrade pip
-    .venv/bin/pip install votemarket-toolkit
+    .venv/bin/pip install votemarket-toolkit=={{TOOLKIT_VERSION}}
 
 # Activate toolkit environment hint
 toolkit-activate:

@@ -23,8 +23,11 @@ use std::{
 use config::{ProofKind, ProofSource, RunMode};
 use helpers::{
     decode_abi_public_values, decode_hex_bytes, parse_optional_bool_env, resolve_rpc_url,
+    ONE_WEEK_SECONDS,
 };
-use input::{build_input_from_rpc, build_input_from_toolkit, expand_requests};
+use input::{
+    build_input_from_rpc, build_input_from_toolkit, enforce_input_bounds, expand_requests,
+};
 use proof::persist_proof;
 use rpc::{fetch_block_state_root, fetch_latest_block_number, fetch_proofs};
 use toolkit::{ensure_input_json, run_toolkit};
@@ -39,7 +42,20 @@ const DEFAULT_ELF_REL_PATHS: [&str; 3] = [
     "../target/elf-compilation/riscv64im-succinct-zkvm-elf/release/program",
     "../target/elf-compilation/riscv64im-succinct-zkvm-elf/debug/program",
 ];
-const ONE_WEEK_SECONDS: u64 = 7 * 24 * 60 * 60;
+
+///////////////////////////////////////////////
+// FAILURE
+///////////////////////////////////////////////
+
+/// Exit with a message, for failures that carry an already-sanitized reason.
+///
+/// Used instead of `.expect` on anything touching the RPC or the toolkit: a panic
+/// prints the payload plus a backtrace, which is a lot of surface for a string that
+/// may have been built around a credential-bearing URL.
+fn fail(context: &str, reason: &str) -> ! {
+    eprintln!("{context}: {reason}");
+    std::process::exit(1);
+}
 
 ///////////////////////////////////////////////
 // ELF LOADING
@@ -116,7 +132,7 @@ async fn main() {
             println!("BLOCK_NUMBER not set, fetching latest block...");
             let latest = fetch_latest_block_number(&http_client, &rpc_url)
                 .await
-                .expect("Failed to fetch latest block number");
+                .unwrap_or_else(|err| fail("Failed to fetch latest block number", &err));
             println!(
                 "Latest block: {}, using: {}",
                 latest,
@@ -183,13 +199,14 @@ async fn main() {
 
     let (state_root, timestamp) = fetch_block_state_root(&http_client, &rpc_url, block_number)
         .await
-        .expect("Failed to fetch block state root");
+        .unwrap_or_else(|err| fail("Failed to fetch block state root", &err));
 
     let epoch = host_input
         .epoch_override
         .unwrap_or_else(|| (timestamp / ONE_WEEK_SECONDS) * ONE_WEEK_SECONDS);
 
-    let requests = expand_requests(&host_input, epoch).expect("Failed to expand requests");
+    let requests = expand_requests(&host_input, epoch)
+        .unwrap_or_else(|err| fail("Failed to expand requests", &err));
 
     // Collect all slots for RPC fetch
     let mut all_slots: Vec<U256> = Vec::new();
@@ -209,7 +226,7 @@ async fn main() {
                 &all_slots,
             )
             .await
-            .expect("Failed to fetch proofs");
+            .unwrap_or_else(|err| fail("Failed to fetch proofs", &err));
 
             build_input_from_rpc(
                 state_root,
@@ -219,13 +236,13 @@ async fn main() {
                 &requests,
                 proof,
             )
-            .expect("Failed to build input")
+            .unwrap_or_else(|err| fail("Failed to build input", &err))
         }
         ProofSource::Toolkit => {
-            let input_path =
-                ensure_input_json(&host_input, epoch).expect("Failed to create input JSON");
-            let bundle =
-                run_toolkit(&input_path, rpc_env_name, &rpc_url).expect("Failed to run toolkit");
+            let input_path = ensure_input_json(&host_input, epoch)
+                .unwrap_or_else(|err| fail("Failed to create input JSON", &err));
+            let bundle = run_toolkit(&input_path, rpc_env_name, &rpc_url, &host_input, epoch)
+                .unwrap_or_else(|err| fail("Failed to run toolkit", &err));
 
             build_input_from_toolkit(
                 state_root,
@@ -235,9 +252,15 @@ async fn main() {
                 &requests,
                 bundle,
             )
-            .expect("Failed to build toolkit input")
+            .unwrap_or_else(|err| fail("Failed to build toolkit input", &err))
         }
     };
+
+    // The builders already bound what they produce; re-checking here means no future
+    // construction path can reach the prover unbounded.
+    if let Err(err) = enforce_input_bounds(&input) {
+        fail("Input exceeds ingestion limits", &err);
+    }
 
     stdin.write(&input);
 
