@@ -174,9 +174,19 @@ fn process_account_requests(
             // Derive the canonical slots in-circuit from (protocol, account, gauge).
             let slots = derive_account_slots(protocol, req.account, req.gauge);
 
-            // Verify storage proof to get the slope and end values
-            let slope = verify_storage_proof(&storage_root, slots.slope, &req.slope_proof);
-            let end = verify_storage_proof(&storage_root, slots.end, &req.end_proof);
+            // Verify both storage proofs. Every protocol proves both slots, so both
+            // proofs stay mandatory (fail-closed) even where a committed value is
+            // derived from only one of the two words.
+            let slope_word = verify_storage_proof(&storage_root, slots.slope, &req.slope_proof);
+            let end_word = verify_storage_proof(&storage_root, slots.end, &req.end_proof);
+
+            // Pendle packs its vote into one word and stores no expiry, so its two
+            // words do not carry `(slope, end)` directly the way every other
+            // protocol's do. See `decode_pendle_vote`.
+            let (slope, end) = match protocol {
+                Protocol::Pendle => decode_pendle_vote(end_word),
+                _ => (slope_word, end_word),
+            };
 
             // Verify last_vote. Fail-closed: every protocol except Pendle has a
             // last_vote slot, so its proof is mandatory. Accepting a missing proof
@@ -203,6 +213,42 @@ fn process_account_requests(
             }
         })
         .collect()
+}
+
+/// Decode a Pendle account vote into the `(slope, end)` pair the on-chain
+/// consumers expect, from the packed `VeBalance` word.
+///
+/// Pendle's VotingController stores `UserPoolData { uint64 weight; VeBalance {
+/// uint128 bias; uint128 slope; } }`: `weight` alone in the user-vote slot and the
+/// packed `VeBalance` in the next one, so the second word holds both fields
+/// (`bias` low, `slope` high). Pendle stores no expiry: the vote decays linearly,
+/// so the expiry is where that line reaches zero, `bias / slope`. These are the
+/// same values `VerifierPendle._extractUserSlope` commits on the MPT path, and
+/// floor division of the same two operands agrees with its uint128 arithmetic.
+///
+/// The guard is on `slope`, the denominator, which is where the reference and this
+/// deliberately differ. `VerifierPendle` gates the division on `bias > 0`, the
+/// numerator, which does not protect it: a `(slope == 0, bias > 0)` word passes
+/// that guard and divides by zero. The reference merely reverts one call there,
+/// whereas a panic here makes the entire batch unprovable, so that shape must
+/// commit `end = 0` instead. Wherever the reference yields a value at all, this
+/// yields the same one.
+///
+/// That divergence is unreachable rather than merely unlikely: Pendle derives the
+/// two fields together as `bias = slope * expiry` (`convertToVeBalance`), so a zero
+/// slope forces a zero bias, and no authentic vote can carry `(0, bias > 0)`. The
+/// guard is there for a word that Pendle's own math cannot produce, and committing
+/// zeros for it is the conservative reading anyway: the lens treats `slope == 0` as
+/// no vote, so it can only ever under-credit, never over-credit.
+fn decode_pendle_vote(packed: U256) -> (U256, U256) {
+    let slope: U256 = packed >> 128;
+    let bias = packed & U256::from(u128::MAX);
+    let end = if slope.is_zero() {
+        U256::ZERO
+    } else {
+        bias / slope
+    };
+    (slope, end)
 }
 
 /// Verify an account proof against the state root and extract the storage root.
@@ -841,19 +887,65 @@ mod tests {
         let gauge = TEST_GAUGE.parse::<Address>().unwrap();
         let gauge_controller = Address::repeat_byte(0x22);
 
-        let slope_value = U256::from(200u64);
-        let end_value = U256::from(3000000000u64);
-
         // Pendle has no last_user_vote mapping, so the guest derives None.
-        let protocol = Protocol::Pendle;
-        let slots = derive_account_slots(protocol, account, gauge);
+        let slots = derive_account_slots(Protocol::Pendle, account, gauge);
         assert!(slots.last_vote.is_none());
 
-        // Create a trie with slope and end values only
+        let (state_root, request) = pendle_account_request(
+            account,
+            gauge,
+            gauge_controller,
+            PENDLE_SAMPLE_WEIGHT,
+            pendle_packed(PENDLE_SAMPLE_BIAS, PENDLE_SAMPLE_SLOPE),
+        );
+
+        let results = process_account_requests(&state_root, TEST_EPOCH, &[request]);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].slope, PENDLE_SAMPLE_SLOPE);
+        assert_eq!(results[0].last_vote, U256::ZERO);
+    }
+
+    // =========================================================================
+    // Pendle packed-VeBalance decoding
+    // =========================================================================
+
+    // Pinned from mainnet at block 17373523 (`getUserPoolVote` + `cast storage` on the
+    // Pendle VotingController 0x44087E105137a5095c008AaB6a6530182821F2F0). The two
+    // words of this account's vote are:
+    //   S[finalSlot]   = 0x0000000000000000000000000000000000000000000000000928ca80cfc20000
+    //   S[finalSlot+1] = 0x00000000000000000012e2b3e59ac3dc000000000007af859095ea8d0bdd3c00
+    // i.e. weight alone, then the packed VeBalance (bias low 128, slope high 128).
+    const PENDLE_SAMPLE_ACCOUNT: &str = "0xd8fa8dc5adec503acc5e026a98f32ca5c1fa289a";
+    const PENDLE_SAMPLE_GAUGE: &str = "0x7d49e5adc0eaad9c027857767638613253ef125f";
+    const PENDLE_SAMPLE_WEIGHT: U256 = U256::from_limbs([660000000000000000, 0, 0, 0]);
+    const PENDLE_SAMPLE_SLOPE: U256 = U256::from_limbs([5315811859940316, 0, 0, 0]);
+    // 9291358707257600007552000 = 0x07af859095ea8d0bdd3c00, wider than one u64 limb.
+    const PENDLE_SAMPLE_BIAS: U256 = U256::from_limbs([10418491204501847040, 503685, 0, 0]);
+    // bias / slope, the expiry the on-chain consumers read as `end`.
+    const PENDLE_SAMPLE_END: U256 = U256::from_limbs([1747872000, 0, 0, 0]);
+
+    /// Pack a `VeBalance { uint128 bias; uint128 slope; }` the way Solidity lays it
+    /// out in one word: first-declared field in the low bits.
+    fn pendle_packed(bias: U256, slope: U256) -> U256 {
+        (slope << 128) | bias
+    }
+
+    /// Build a Pendle account request whose two vote words sit at their canonical
+    /// derived slots, mirroring the on-chain layout: `weight` at the user-vote slot,
+    /// the packed `VeBalance` at the next one.
+    fn pendle_account_request(
+        account: Address,
+        gauge: Address,
+        gauge_controller: Address,
+        weight: U256,
+        packed: U256,
+    ) -> (B256, AccountRequest) {
+        let slots = derive_account_slots(Protocol::Pendle, account, gauge);
         let memdb = Arc::new(MemoryDB::new(true));
         let mut trie = EthTrie::new(memdb.clone());
 
-        for (slot, value) in [(slots.slope, slope_value), (slots.end, end_value)] {
+        for (slot, value) in [(slots.slope, weight), (slots.end, packed)] {
             let key = keccak256(&slot.to_be_bytes::<32>());
             let mut rlp_value = Vec::new();
             value.encode(&mut rlp_value);
@@ -867,25 +959,252 @@ mod tests {
         let end_proof = trie
             .get_proof(&keccak256(&slots.end.to_be_bytes::<32>()))
             .unwrap();
-
         let (state_root, account_proof) = create_account_trie_proof(gauge_controller, storage_root);
 
-        let request = AccountRequest {
-            protocol_id: protocol.as_u8(),
+        (
+            state_root,
+            AccountRequest {
+                protocol_id: Protocol::Pendle.as_u8(),
+                account,
+                gauge,
+                gauge_controller,
+                account_proof,
+                slope_proof,
+                end_proof,
+                last_vote_proof: None,
+            },
+        )
+    }
+
+    /// Mirror of `PendleOracleLens.getAccountVotes` (contracts-monorepo), so the
+    /// guest's committed values can be checked against what the consumer computes
+    /// from them. The `lastUpdate == 0` revert is oracle state, not vote data, and
+    /// has no counterpart here.
+    fn lens_account_votes(slope: U256, end: U256, epoch: u64) -> U256 {
+        let epoch = U256::from(epoch);
+        if epoch >= end {
+            return U256::ZERO;
+        }
+        slope * (end - epoch)
+    }
+
+    /// Mirror of `PendleOracleLens.isVoteValid` (contracts-monorepo).
+    fn lens_is_vote_valid(slope: U256, end: U256, epoch: u64) -> bool {
+        !(slope.is_zero() || U256::from(epoch) >= end)
+    }
+
+    // The core of the fix, against the pinned real mainnet vote: the guest must commit
+    // the VeBalance's own slope and the derived expiry, both decoded out of the
+    // single packed word, never the two raw words.
+    #[test]
+    fn test_pendle_decodes_packed_vebalance_from_mainnet_sample() {
+        let account = PENDLE_SAMPLE_ACCOUNT.parse::<Address>().unwrap();
+        let gauge = PENDLE_SAMPLE_GAUGE.parse::<Address>().unwrap();
+        let gauge_controller = Protocol::Pendle.gauge_controller().unwrap();
+        let packed = pendle_packed(PENDLE_SAMPLE_BIAS, PENDLE_SAMPLE_SLOPE);
+
+        // Guard the fixture itself against a typo: these are the bytes read off chain.
+        assert_eq!(
+            packed,
+            U256::from_str_radix(
+                "00000000000000000012e2b3e59ac3dc000000000007af859095ea8d0bdd3c00",
+                16
+            )
+            .unwrap(),
+            "packed fixture must equal the word read at S[finalSlot+1]"
+        );
+        assert_eq!(PENDLE_SAMPLE_BIAS / PENDLE_SAMPLE_SLOPE, PENDLE_SAMPLE_END);
+
+        let (state_root, request) = pendle_account_request(
             account,
             gauge,
             gauge_controller,
-            account_proof,
-            slope_proof,
-            end_proof,
+            PENDLE_SAMPLE_WEIGHT,
+            packed,
+        );
+        let results = process_account_requests(&state_root, TEST_EPOCH, &[request]);
+
+        assert_eq!(results[0].slope, PENDLE_SAMPLE_SLOPE);
+        assert_eq!(results[0].end, PENDLE_SAMPLE_END);
+        assert_eq!(results[0].last_vote, U256::ZERO);
+    }
+
+    // Regression pinning the pre-fix behavior as gone: `slope` was the uint64 weight
+    // from S[finalSlot] and `end` the whole packed word (~1.8e54), which made every
+    // Pendle vote look unexpired and wildly overweighted to PendleOracleLens.
+    #[test]
+    fn test_pendle_no_longer_commits_raw_words() {
+        let account = PENDLE_SAMPLE_ACCOUNT.parse::<Address>().unwrap();
+        let gauge = PENDLE_SAMPLE_GAUGE.parse::<Address>().unwrap();
+        let gauge_controller = Protocol::Pendle.gauge_controller().unwrap();
+        let packed = pendle_packed(PENDLE_SAMPLE_BIAS, PENDLE_SAMPLE_SLOPE);
+
+        let (state_root, request) = pendle_account_request(
+            account,
+            gauge,
+            gauge_controller,
+            PENDLE_SAMPLE_WEIGHT,
+            packed,
+        );
+        let results = process_account_requests(&state_root, TEST_EPOCH, &[request]);
+
+        assert_ne!(
+            results[0].slope, PENDLE_SAMPLE_WEIGHT,
+            "slope must not be the raw weight word"
+        );
+        assert_ne!(
+            results[0].end, packed,
+            "end must not be the raw packed word"
+        );
+        // The old `end` was the ~1.8e54 packed word, which no plausible epoch ever
+        // reaches, so the vote read as live forever. The fixed `end` is a real unix
+        // timestamp: still live at TEST_EPOCH, spent once the epoch reaches it.
+        assert!(results[0].end < U256::from(u64::MAX));
+        assert!(lens_is_vote_valid(
+            results[0].slope,
+            results[0].end,
+            TEST_EPOCH
+        ));
+        assert!(!lens_is_vote_valid(
+            results[0].slope,
+            results[0].end,
+            PENDLE_SAMPLE_END.to::<u64>()
+        ));
+    }
+
+    // (a) A zero vote decodes to zeros, and reads as no votes / invalid on the lens,
+    // matching what VerifierPendle commits for the same storage.
+    #[test]
+    fn test_pendle_zero_vote_decodes_to_zero() {
+        let account = TEST_ACCOUNT.parse::<Address>().unwrap();
+        let gauge = TEST_GAUGE.parse::<Address>().unwrap();
+        let gauge_controller = Protocol::Pendle.gauge_controller().unwrap();
+
+        let (state_root, request) =
+            pendle_account_request(account, gauge, gauge_controller, U256::ZERO, U256::ZERO);
+        let results = process_account_requests(&state_root, TEST_EPOCH, &[request]);
+
+        assert_eq!(results[0].slope, U256::ZERO);
+        assert_eq!(results[0].end, U256::ZERO);
+        assert_eq!(
+            lens_account_votes(results[0].slope, results[0].end, TEST_EPOCH),
+            U256::ZERO
+        );
+        assert!(!lens_is_vote_valid(
+            results[0].slope,
+            results[0].end,
+            TEST_EPOCH
+        ));
+    }
+
+    // (b) A zero-slope word with a non-zero bias is the div-by-zero shape. Guarding
+    // the numerator (as VerifierPendle does) would panic here and brick the whole
+    // batch, so this rides alongside a healthy request to pin that it does not.
+    #[test]
+    fn test_pendle_zero_slope_in_batch_commits_zero_end_without_panic() {
+        let gauge = TEST_GAUGE.parse::<Address>().unwrap();
+        let gauge_controller = Protocol::Pendle.gauge_controller().unwrap();
+        let healthy = PENDLE_SAMPLE_ACCOUNT.parse::<Address>().unwrap();
+        let degenerate = Address::repeat_byte(0x5a);
+
+        // Both accounts must live under one storage root for a single batch.
+        let healthy_slots = derive_account_slots(Protocol::Pendle, healthy, gauge);
+        let degenerate_slots = derive_account_slots(Protocol::Pendle, degenerate, gauge);
+        let healthy_packed = pendle_packed(PENDLE_SAMPLE_BIAS, PENDLE_SAMPLE_SLOPE);
+        // slope == 0 (high 128 empty), bias > 0: the denominator is the zero one.
+        let degenerate_packed = pendle_packed(U256::from(12345u64), U256::ZERO);
+        assert!(!degenerate_packed.is_zero());
+
+        let memdb = Arc::new(MemoryDB::new(true));
+        let mut trie = EthTrie::new(memdb.clone());
+        for (slot, value) in [
+            (healthy_slots.slope, PENDLE_SAMPLE_WEIGHT),
+            (healthy_slots.end, healthy_packed),
+            (degenerate_slots.slope, U256::from(7u64)),
+            (degenerate_slots.end, degenerate_packed),
+        ] {
+            let key = keccak256(&slot.to_be_bytes::<32>());
+            let mut rlp_value = Vec::new();
+            value.encode(&mut rlp_value);
+            trie.insert(&key, &rlp_value).unwrap();
+        }
+        let storage_root = B256::from(trie.root_hash().unwrap().0);
+        let (state_root, account_proof) = create_account_trie_proof(gauge_controller, storage_root);
+
+        let mut build = |account: Address, slots: shared::protocol::AccountSlots| AccountRequest {
+            protocol_id: Protocol::Pendle.as_u8(),
+            account,
+            gauge,
+            gauge_controller,
+            account_proof: account_proof.clone(),
+            slope_proof: trie
+                .get_proof(&keccak256(&slots.slope.to_be_bytes::<32>()))
+                .unwrap(),
+            end_proof: trie
+                .get_proof(&keccak256(&slots.end.to_be_bytes::<32>()))
+                .unwrap(),
             last_vote_proof: None,
         };
 
+        let results = process_account_requests(
+            &state_root,
+            TEST_EPOCH,
+            &[
+                build(degenerate, degenerate_slots),
+                build(healthy, healthy_slots),
+            ],
+        );
+
+        // The degenerate vote is neutralized, not fatal...
+        assert_eq!(results[0].slope, U256::ZERO);
+        assert_eq!(results[0].end, U256::ZERO);
+        assert!(!lens_is_vote_valid(
+            results[0].slope,
+            results[0].end,
+            TEST_EPOCH
+        ));
+        // ...and its neighbour in the same batch still decodes correctly.
+        assert_eq!(results[1].slope, PENDLE_SAMPLE_SLOPE);
+        assert_eq!(results[1].end, PENDLE_SAMPLE_END);
+    }
+
+    // (c) At the decay boundary the lens must read the vote as spent, from the
+    // values the guest committed.
+    #[test]
+    fn test_pendle_epoch_equal_to_end_reads_as_expired() {
+        let account = TEST_ACCOUNT.parse::<Address>().unwrap();
+        let gauge = TEST_GAUGE.parse::<Address>().unwrap();
+        let gauge_controller = Protocol::Pendle.gauge_controller().unwrap();
+
+        // Pick bias = slope * TEST_EPOCH so the decoded end lands exactly on TEST_EPOCH.
+        let slope = U256::from(1_000_000u64);
+        let bias = slope * U256::from(TEST_EPOCH);
+        let (state_root, request) = pendle_account_request(
+            account,
+            gauge,
+            gauge_controller,
+            PENDLE_SAMPLE_WEIGHT,
+            pendle_packed(bias, slope),
+        );
         let results = process_account_requests(&state_root, TEST_EPOCH, &[request]);
 
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].slope, slope_value);
-        assert_eq!(results[0].last_vote, U256::ZERO);
+        assert_eq!(results[0].end, U256::from(TEST_EPOCH));
+        assert_eq!(
+            lens_account_votes(results[0].slope, results[0].end, TEST_EPOCH),
+            U256::ZERO
+        );
+        assert!(!lens_is_vote_valid(
+            results[0].slope,
+            results[0].end,
+            TEST_EPOCH
+        ));
+        // One epoch earlier the same vote is still live, so `end` is a real boundary
+        // and not a value that reads as expired for every epoch.
+        assert!(lens_is_vote_valid(
+            results[0].slope,
+            results[0].end,
+            TEST_EPOCH - 1
+        ));
     }
 
     #[test]
