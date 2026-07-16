@@ -1,0 +1,15 @@
+# The toolkit's version, and the only place in the repo that states it by hand.
+# toolkit-requirements.lock is generated from this file and pins the whole
+# transitive tree with hashes; the Docker image and `just toolkit-setup` both
+# install from the lock, never from this file.
+#
+# The toolkit runs as a subprocess of the prover and is handed the chain's RPC
+# URL, so its dependency tree is on the proof path. Pinning only the top-level
+# version leaves 60-odd transitive packages resolving fresh on every install.
+#
+# To bump:
+#   1. edit the pin below
+#   2. `just toolkit-lock`   (regenerates the lock from a fresh resolve)
+#   3. re-verify against the image: `just build`, then import the toolkit
+#   4. commit this file and the lock together, never one without the other
+votemarket-toolkit==2.0.0

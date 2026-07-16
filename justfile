@@ -1,9 +1,10 @@
 # Votemarket SP1 Verifier - Justfile
 # Run `just --list` to see all available commands
 
-# Pinned toolkit version. Keep in lockstep with TOOLKIT_VERSION in docker/Dockerfile
-# so the local venv and the Docker image run the same proof-data source.
-TOOLKIT_VERSION := "2.0.0"
+# The lock's resolution floor. Sub-3.12 interpreters resolve a different pandas and
+# numpy, so a lock that supported them would put the venv and the image on different
+# code -- the divergence the lock exists to remove. See toolkit-requirements.in.
+TOOLKIT_PYTHON_FLOOR := "3.12"
 
 # Default recipe: show help
 default:
@@ -85,11 +86,27 @@ prove-core input_file:
 # TOOLKIT SETUP
 # ============================================================================
 
-# Setup Python virtual environment and install toolkit
+# Setup Python virtual environment and install the hash-locked toolkit
 toolkit-setup:
     python3 -m venv .venv
+    # Check the floor before pip does: below it, pip fails deep inside resolution
+    # with an error that names a transitive package and never mentions the floor.
+    .venv/bin/python -c "import sys; \
+      floor = tuple(int(p) for p in '{{TOOLKIT_PYTHON_FLOOR}}'.split('.')); \
+      sys.exit(0) if sys.version_info[:2] >= floor else sys.exit( \
+        'toolkit-requirements.lock is resolved for Python {{TOOLKIT_PYTHON_FLOOR}}+, ' \
+        'this venv is %d.%d. See toolkit-requirements.in.' % sys.version_info[:2])"
     .venv/bin/pip install --upgrade pip
-    .venv/bin/pip install votemarket-toolkit=={{TOOLKIT_VERSION}}
+    .venv/bin/pip install --require-hashes -r toolkit-requirements.lock
+
+# Regenerate toolkit-requirements.lock from toolkit-requirements.in (needs `uv`)
+# Run after any edit to toolkit-requirements.in, then re-verify against the image.
+# -U is not optional: uv reads an existing -o file back as resolution preferences,
+# so without it a stale or hand-edited lock survives the very command meant to be
+# its correcting authority, and gets silently ratified.
+toolkit-lock:
+    uv pip compile toolkit-requirements.in --universal --generate-hashes \
+      --python-version {{TOOLKIT_PYTHON_FLOOR}} -U -o toolkit-requirements.lock
 
 # Activate toolkit environment hint
 toolkit-activate:

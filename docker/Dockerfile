@@ -5,10 +5,6 @@ FROM ubuntu:24.04
 
 # Build arguments
 ARG SP1_VERSION=v6.3.0
-# Pinned: the toolkit runs as a subprocess of the prover and is handed the RPC URL,
-# so an unpinned floating version is an unreviewed dependency on the proof path.
-# Keep in lockstep with the `toolkit-setup` recipe in the justfile.
-ARG TOOLKIT_VERSION=2.0.0
 
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
@@ -45,9 +41,15 @@ RUN /home/ubuntu/.sp1/bin/sp1up --version ${SP1_VERSION}
 # Add SP1 to PATH
 ENV PATH="/home/ubuntu/.sp1/bin:${PATH}"
 
-# Install votemarket-toolkit for proof data fetching
+# Install votemarket-toolkit for proof data fetching, from a hash-locked tree.
+# The toolkit runs as a subprocess of the prover and is handed the RPC URL, so its
+# whole transitive closure is on the proof path: pinning the top-level version
+# alone still lets ~60 packages resolve fresh, unverified, on every rebuild.
+# --require-hashes makes a substituted or re-published artifact fail the build.
+# Regenerate the lock with `just toolkit-lock` (see toolkit-requirements.in).
+COPY toolkit-requirements.lock /tmp/toolkit-requirements.lock
 RUN python3 -m pip install --user --break-system-packages \
-    votemarket-toolkit==${TOOLKIT_VERSION}
+    --require-hashes -r /tmp/toolkit-requirements.lock
 ENV PATH="/home/ubuntu/.local/bin:${PATH}"
 
 # Pre-create directories that will be mounted as volumes

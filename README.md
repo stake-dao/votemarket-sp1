@@ -26,7 +26,7 @@ For detailed technical documentation, see [SPEC.md](./SPEC.md).
 
 1. **Docker** with Docker Compose
 2. **Just** (command runner)
-3. **Python 3.10+** (for the proof toolkit)
+3. **Python 3.12+** (for the proof toolkit, matching the Docker image)
 
 ```bash
 # macOS
@@ -214,7 +214,15 @@ just dev-test-script
 
 ### Toolkit Setup
 
-The toolkit allows fetching proof data from RPC endpoints:
+The toolkit allows fetching proof data from RPC endpoints. It installs from
+`toolkit-requirements.lock`, a hash-locked resolution of the whole transitive tree,
+so the venv and the Docker image run byte-identical code on the proof path. That
+lock is resolved for Python 3.12+; older interpreters resolve a different pandas
+and numpy, which is exactly the divergence the lock prevents.
+
+To change the toolkit version, edit the pin in `toolkit-requirements.in`, run
+`just toolkit-lock` (needs [uv](https://github.com/astral-sh/uv)), re-verify against
+the image, and commit both files together. Never hand-edit the lock.
 
 ```bash
 just toolkit-setup
