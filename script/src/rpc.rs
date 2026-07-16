@@ -3,8 +3,9 @@
 use alloy_primitives::{Address, B256, U256};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::time::Duration;
 
-use crate::helpers::{parse_b256, parse_u64, u256_to_hex_32};
+use crate::helpers::{parse_b256, parse_positive_u64_env, parse_u64, u256_to_hex_32};
 
 ///////////////////////////////////////////////
 // RPC TYPES
@@ -57,9 +58,55 @@ pub struct ProofResponse {
 ///////////////////////////////////////////////
 
 /// Cap on a single RPC response body, enforced while the body streams in so an
-/// oversized one is never buffered whole. A mainnet `eth_getProof` response for a
-/// batch of slots is a few KB, so this is a generous ceiling on an untrusted peer.
+/// oversized one is never buffered whole. Measured 2026-07-16 against mainnet, a
+/// single `eth_getProof` runs ~4.5 KB per slot (3 slots 22 KB, 300 slots 1.36 MB),
+/// and `main.rs` batches every slot of every request into one call, so this cap is
+/// what bounds the batch: it tops out around 1,760 slots.
 pub const MAX_RPC_BODY_BYTES: usize = 8 * 1024 * 1024;
+
+///////////////////////////////////////////////
+// TIME LIMITS
+///////////////////////////////////////////////
+
+/// Deadlines for a single RPC call. The byte cap above bounds memory, not time: a
+/// peer that accepts the connection and then dribbles bytes, or sends nothing at
+/// all, stays under every size limit precisely by stalling.
+///
+/// Sized against measured mainnet latency for the shape this host actually issues
+/// (one `eth_getProof` carrying every slot): 556 ms at 3 slots, 1.25 s at 300, and
+/// roughly 5 s extrapolated at the ~1,760 slots the body cap allows. The total is
+/// the one that closes the hole, because reqwest applies it from connect until the
+/// response body has finished, which covers `read_body_bounded`'s chunk loop.
+///
+/// The total is overridable for the same reason the toolkit's deadline is: nothing
+/// caps how many slots land in one call, and the measurement behind 30s is one
+/// provider on one day, so a degraded endpoint serving a large batch would turn a
+/// slow-but-working run into a hard failure with no way around it.
+const RPC_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const RPC_READ_TIMEOUT: Duration = Duration::from_secs(15);
+const DEFAULT_RPC_REQUEST_TIMEOUT_SECS: u64 = 30;
+
+/// Build the HTTP client every RPC call shares.
+pub fn build_http_client() -> Result<reqwest::Client, String> {
+    let total = Duration::from_secs(
+        parse_positive_u64_env("RPC_REQUEST_TIMEOUT_SECS")?
+            .unwrap_or(DEFAULT_RPC_REQUEST_TIMEOUT_SECS),
+    );
+    build_http_client_with(RPC_CONNECT_TIMEOUT, RPC_READ_TIMEOUT, total)
+}
+
+fn build_http_client_with(
+    connect: Duration,
+    read: Duration,
+    total: Duration,
+) -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .connect_timeout(connect)
+        .read_timeout(read)
+        .timeout(total)
+        .build()
+        .map_err(|err| sanitize_reqwest_error("failed to build the HTTP client", err))
+}
 
 ///////////////////////////////////////////////
 // ERROR SANITIZING
@@ -449,6 +496,99 @@ mod tests {
             Some(("https://host.example", "/v2/key"))
         );
         assert_eq!(split_url_origin("not-a-url"), None);
+    }
+
+    ///////////////////////////////////////////////
+    // TIME BOUND TESTS
+    ///////////////////////////////////////////////
+
+    // The size cap bounds memory, not time: a peer that accepts the connection and
+    // then says nothing stays under every byte limit precisely by stalling. Use a
+    // real listener that accepts and never answers -- a non-routable address is not
+    // a substitute, since it usually fails instantly with EHOSTUNREACH and would
+    // pass identically against a client with no timeout at all.
+    #[tokio::test]
+    async fn test_stalled_peer_hits_the_request_deadline() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // Accept and hold the connection open, forever, saying nothing.
+        tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+            drop(socket);
+        });
+
+        let client = build_http_client_with(
+            Duration::from_secs(5),
+            Duration::from_millis(400),
+            Duration::from_millis(600),
+        )
+        .unwrap();
+
+        let started = std::time::Instant::now();
+        let result: Result<serde_json::Value, String> = rpc_call(
+            &client,
+            &format!("http://{addr}"),
+            "eth_blockNumber",
+            json!([]),
+        )
+        .await;
+        let elapsed = started.elapsed();
+
+        result.expect_err("a stalled peer must not hang forever");
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "must fail at the deadline, not hang: {elapsed:?}"
+        );
+    }
+
+    // A timeout in the connect/header phase carries the URL, so the sanitizer is
+    // load-bearing on exactly this path. (A body-phase timeout is built without a
+    // URL, so the same precondition assert would not hold there.)
+    #[tokio::test]
+    async fn test_header_phase_timeout_does_not_leak_url_credential() {
+        const SECRET: &str = "s3cret-api-key-do-not-log";
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+            drop(socket);
+        });
+        let url = format!("http://{addr}/v2/{SECRET}");
+
+        let client = build_http_client_with(
+            Duration::from_secs(5),
+            Duration::from_millis(400),
+            Duration::from_millis(600),
+        )
+        .unwrap();
+
+        let err = client
+            .post(&url)
+            .json(&json!({}))
+            .send()
+            .await
+            .expect_err("a stalled peer must time out");
+
+        // Assert the raw error really does carry the credential, so this cannot
+        // silently pass on a reqwest that stopped embedding URLs.
+        assert!(
+            full_error_chain(&err).contains(SECRET),
+            "precondition: a header-phase timeout is expected to carry the URL"
+        );
+
+        let sanitized = sanitize_reqwest_error("RPC request failed", err);
+        assert!(
+            !sanitized.contains(SECRET),
+            "sanitized timeout leaked the credential: {sanitized}"
+        );
+    }
+
+    #[test]
+    fn test_build_http_client_applies_timeouts() {
+        build_http_client().expect("the production client must build");
     }
 
     ///////////////////////////////////////////////

@@ -109,6 +109,42 @@ pub fn parse_optional_bool_env(name: &str) -> Option<bool> {
         .map(|value| matches!(value.to_lowercase().as_str(), "1" | "true" | "yes"))
 }
 
+/// Parse a strictly-positive decimal integer.
+///
+/// Split from its env wrapper so it can be tested without touching the process
+/// environment: the env-mutating tests elsewhere in this binary serialize on a
+/// mutex private to `config.rs`, and `allowlisted_child_env` reads `PATH`/`HOME`
+/// live, so a new env-mutating test here would race both.
+///
+/// Zero is refused rather than read as "no limit": the callers are deadlines, and
+/// a zero deadline kills the child before it can do anything. Decimal only, unlike
+/// `parse_u64`, which accepts the hex a block number arrives in.
+pub fn parse_positive_u64_str(value: &str) -> Result<u64, String> {
+    let trimmed = value.trim();
+    let parsed: u64 = trimmed
+        .parse()
+        .map_err(|_| format!("expected a positive integer, got {trimmed:?}"))?;
+    if parsed == 0 {
+        return Err("expected a positive integer, got 0".to_string());
+    }
+    Ok(parsed)
+}
+
+/// Read a strictly-positive integer setting from the environment.
+///
+/// A malformed value is a hard error, unlike `parse_optional_u64_env`, which
+/// swallows one and falls back to its caller's default. That is deliberate here: a
+/// typo in a deadline would otherwise silently disarm the bound it was meant to
+/// set, which is the opposite of what the operator asked for.
+pub fn parse_positive_u64_env(name: &str) -> Result<Option<u64>, String> {
+    match env::var(name) {
+        Err(_) => Ok(None),
+        Ok(raw) => parse_positive_u64_str(&raw)
+            .map(Some)
+            .map_err(|err| format!("{name}: {err}")),
+    }
+}
+
 ///////////////////////////////////////////////
 // RPC URL RESOLUTION
 ///////////////////////////////////////////////
@@ -666,5 +702,37 @@ mod tests {
     #[test]
     fn test_toolkit_rpc_env_name_unsupported() {
         assert!(toolkit_rpc_env_name(99999).is_err());
+    }
+
+    ///////////////////////////////////////////////
+    // POSITIVE INTEGER SETTING TESTS
+    ///////////////////////////////////////////////
+
+    // Tested on the pure parser rather than through the environment: the env tests
+    // in this binary serialize on a mutex private to `config.rs`, so an env-mutating
+    // test here would race them and `allowlisted_child_env`'s live reads.
+    #[test]
+    fn test_parse_positive_u64_str_accepts_a_positive_integer() {
+        assert_eq!(parse_positive_u64_str("600").unwrap(), 600);
+        assert_eq!(parse_positive_u64_str("  42\n").unwrap(), 42, "must trim");
+    }
+
+    // A typo must not silently fall back to the default: the whole point of the
+    // override is to change the bound, so ignoring it does the opposite of the ask.
+    #[test]
+    fn test_parse_positive_u64_str_rejects_malformed_values() {
+        for bad in ["abc", "", "-1", "1.5", "0x10"] {
+            assert!(
+                parse_positive_u64_str(bad).is_err(),
+                "{bad:?} must be rejected"
+            );
+        }
+    }
+
+    // Zero is not "no limit": it is a deadline that kills every child instantly.
+    #[test]
+    fn test_parse_positive_u64_str_rejects_zero() {
+        let err = parse_positive_u64_str("0").expect_err("zero must be rejected");
+        assert!(err.contains("positive"), "{err}");
     }
 }

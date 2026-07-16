@@ -6,13 +6,37 @@ use std::{
     env, fs,
     io::Read,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, ExitStatus, Stdio},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc,
+    },
+    time::{Duration, Instant},
 };
 
-use crate::helpers::deserialize_address;
+use crate::helpers::{deserialize_address, parse_positive_u64_env};
 use crate::types::HostInput;
 
 const TOOLKIT_ADAPTER: &str = "toolkit_adapter.py";
+
+/// Wall-clock ceiling on the toolkit child, overridable via `TOOLKIT_TIMEOUT_SECS`.
+///
+/// Generous by design and env-tunable because legitimate runtime scales with the
+/// batch size and the RPC's mood, neither of which the per-call RPC timeouts bound:
+/// one toolkit run issues many calls.
+const DEFAULT_TOOLKIT_TIMEOUT_SECS: u64 = 600;
+
+/// How often the supervisor re-checks the readers, the size flag, and the deadline.
+const POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// How long the supervisor waits for the reader threads after deciding to stop.
+///
+/// A group kill releases every pipe immediately, so this normally elapses in
+/// microseconds. It exists for the descendant that escaped the group (its own
+/// `setsid`) and still holds a write end: without a bound, such a process could
+/// re-hang the parent on the way out, which is the very hang the deadline exists
+/// to prevent. On expiry the reader is abandoned rather than joined.
+const READER_GRACE: Duration = Duration::from_secs(5);
 
 /// Cap on the toolkit child's stdout, enforced as it is read so an oversized
 /// bundle is refused before `serde_json` ever sees it. A real bundle is a few KB.
@@ -205,11 +229,88 @@ pub fn run_toolkit(
     epoch: u64,
 ) -> Result<ToolkitProofBundle, String> {
     let adapter = Path::new(env!("CARGO_MANIFEST_DIR")).join(TOOLKIT_ADAPTER);
+    let deadline = Duration::from_secs(
+        parse_positive_u64_env("TOOLKIT_TIMEOUT_SECS")?.unwrap_or(DEFAULT_TOOLKIT_TIMEOUT_SECS),
+    );
 
     let mut command = Command::new(resolve_python_bin());
     command.arg(adapter).arg(input_path);
     command.env_clear();
     command.envs(allowlisted_child_env(rpc_env_name, rpc_url));
+
+    let outcome = supervise_child(&mut command, deadline, rpc_url)?;
+
+    if !outcome.status.success() {
+        return Err(format!(
+            "toolkit exited with status {}: {}",
+            outcome.status,
+            redact_child_stderr(&outcome.stderr, rpc_url)
+        ));
+    }
+    // Deferred deliberately: a child that failed should report its own stderr
+    // rather than whatever the read of its truncated stdout happened to return.
+    outcome.stdout_read?;
+
+    let bundle: ToolkitProofBundle = serde_json::from_slice(&outcome.stdout)
+        .map_err(|err| format!("failed to parse toolkit output: {err}"))?;
+    verify_bundle_context(&bundle, host_input, epoch)?;
+    Ok(bundle)
+}
+
+/// What a supervised child produced, once it is known to have finished.
+#[derive(Debug)]
+struct ChildOutcome {
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    status: ExitStatus,
+    /// Held rather than resolved, so the caller keeps the stderr-before-read-error
+    /// ordering above.
+    stdout_read: Result<(), String>,
+}
+
+/// Run a child to completion under a wall-clock deadline and a stdout size cap.
+///
+/// The caller owns the program, arguments, and environment; this owns the pipes,
+/// the process group, the kill decision, and the single reap.
+///
+/// Two invariants shape the loop below, and both are load-bearing:
+///
+/// 1. **Kill the group, not the child.** A grandchild that inherits stdout holds
+///    the pipe's write end, so the pipe does not reach EOF when the direct child
+///    dies and a reader blocks for as long as the grandchild lives (measured at
+///    5.71s against a trivial case; unbounded in general).
+/// 2. **Never signal the group after reaping the leader.** The leader's zombie is
+///    what pins the pid, and therefore the pgid, against reuse. `try_wait` and
+///    `wait` both reap, so a `killpg` issued after either could land on a
+///    recycled, unrelated group. Hence phase 1 never touches the child, and phase
+///    2 only reaps on a path that never kills.
+fn supervise_child(
+    command: &mut Command,
+    deadline: Duration,
+    rpc_url: &str,
+) -> Result<ChildOutcome, String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+
+    // Install before spawning so the disposition is never the default one while a
+    // child exists. `process_group(0)` takes the child out of the terminal's
+    // foreground group the instant it exists, so Ctrl-C reaches only the prover and
+    // the prover is the deadline's sole enforcer.
+    //
+    // What this does NOT claim: it does not close the orphan window, it only
+    // narrows what runs inside it. The handler no-ops until `arm_signal_forwarding`
+    // publishes the pid, so a signal landing between the child's birth and that
+    // store still re-raises and kills the prover with the child already detached,
+    // which is the same orphan a late install would have produced. The window is
+    // irreducible here: nothing can signal a process whose pid the parent has not
+    // been told yet, and masking would not help, since a process-directed signal
+    // is simply delivered to one of the tokio worker threads instead. It is the
+    // tail of one `spawn` once per run, and the Docker path (every `just prove`
+    // recipe) bounds the escape with the container rather than with this handler.
+    let _signals = SignalForwardGuard::install();
 
     let mut child = command
         .stdout(Stdio::piped())
@@ -217,11 +318,33 @@ pub fn run_toolkit(
         .spawn()
         .map_err(|err| format!("toolkit execution failed: {err}"))?;
 
+    arm_signal_forwarding(&child);
+    let oversized = Arc::new(AtomicBool::new(false));
+
+    // Read one byte past the cap: enough to know the bundle is oversized, without
+    // buffering however much more the child wanted to send. On its own thread
+    // because the kill has to come from outside this blocking read.
+    let mut stdout_pipe = child.stdout.take().expect("stdout is piped");
+    let (stdout_tx, stdout_rx) = mpsc::channel();
+    let stdout_flag = Arc::clone(&oversized);
+    std::thread::spawn(move || {
+        let mut buffer = Vec::new();
+        let result = stdout_pipe
+            .by_ref()
+            .take(MAX_TOOLKIT_STDOUT_BYTES as u64 + 1)
+            .read_to_end(&mut buffer);
+        if buffer.len() > MAX_TOOLKIT_STDOUT_BYTES {
+            stdout_flag.store(true, Ordering::SeqCst);
+        }
+        let _ = stdout_tx.send((result, buffer));
+    });
+
     // Drain stderr on its own thread. Reading stdout to completion first would
     // deadlock against a child that fills the stderr pipe while we are still
     // reading, which is exactly what a chatty failure looks like.
     let mut stderr_pipe = child.stderr.take().expect("stderr is piped");
-    let stderr_reader = std::thread::spawn(move || {
+    let (stderr_tx, stderr_rx) = mpsc::channel();
+    std::thread::spawn(move || {
         let mut buffer = Vec::new();
         let _ = stderr_pipe
             .by_ref()
@@ -229,52 +352,253 @@ pub fn run_toolkit(
             .read_to_end(&mut buffer);
         // Keep draining past the cap so the child never blocks on a full pipe.
         let _ = std::io::copy(&mut stderr_pipe, &mut std::io::sink());
-        buffer
+        let _ = stderr_tx.send(buffer);
     });
 
-    // Read one byte past the cap: enough to know the bundle is oversized, without
-    // buffering however much more the child wanted to send.
-    let mut stdout_pipe = child.stdout.take().expect("stdout is piped");
-    let mut stdout = Vec::new();
-    let read_result = stdout_pipe
-        .by_ref()
-        .take(MAX_TOOLKIT_STDOUT_BYTES as u64 + 1)
-        .read_to_end(&mut stdout);
-    let oversized = stdout.len() > MAX_TOOLKIT_STDOUT_BYTES;
+    let start = Instant::now();
+    let mut stdout_slot = None;
+    let mut stderr_slot = None;
+    let mut timed_out = false;
 
-    if oversized {
-        // Kill rather than drain: a child streaming without end would otherwise hold
-        // the prover here forever, which is the very thing the cap exists to stop.
-        // Dropping the pipes lets the child die on SIGPIPE even if the kill races.
-        let _ = child.kill();
-        let _ = child.wait();
-        drop(stdout_pipe);
-        let _ = stderr_reader.join();
+    // Phase 1: readers outstanding. Both pipes at EOF is the only proof that every
+    // write end is gone, the child's and its descendants' alike, so wait on the
+    // readers rather than on the child. A lingering-but-legitimate grandchild
+    // finishes here and the run completes normally.
+    loop {
+        if stdout_slot.is_none() {
+            stdout_slot = stdout_rx.try_recv().ok();
+        }
+        if stderr_slot.is_none() {
+            stderr_slot = stderr_rx.try_recv().ok();
+        }
+        // Order matters. The kill checks come first because a child can close both
+        // pipes and stay alive: that fills both slots in a single tick, and leaving
+        // via the readers would skip phase 2's guard and land on phase 3's
+        // unconditional wait, which the child could then hold open for as long as it
+        // liked. Every exit from this loop must either kill or hand phase 2 a child
+        // it will bound.
+        if oversized.load(Ordering::SeqCst) {
+            kill_child_tree(&mut child);
+            break;
+        }
+        if start.elapsed() >= deadline {
+            kill_child_tree(&mut child);
+            timed_out = true;
+            break;
+        }
+        if stdout_slot.is_some() && stderr_slot.is_some() {
+            break;
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+
+    // Phase 2: the pipes are at EOF, so the child is the only thing left that this
+    // function still bounds (it may have closed its pipes and slept). `try_wait` is
+    // safe now: it reaps only once the child has genuinely exited, and that path
+    // issues no kill.
+    //
+    // EOF is proof that every write end is gone, not that every process is. A
+    // descendant that closed the pipes and kept running outlives a successful run,
+    // and no sweep can fix that here: learning the child succeeded means reaping
+    // it, and after the reap invariant 2 forbids the `killpg` that would sweep the
+    // group. Killing before the reap is not an option either, since a child still
+    // doing legitimate work is indistinguishable at that point. A descendant that
+    // `setsid`s out is already beyond `killpg` on every path. Containment for both
+    // is the container the Docker recipes run in, not this loop.
+    if !timed_out && !oversized.load(Ordering::SeqCst) {
+        loop {
+            match child.try_wait() {
+                // Reaped: the pgid is no longer ours to signal, so disarm the
+                // handler before anything else can fire it.
+                Ok(Some(_)) => {
+                    disarm_signal_forwarding();
+                    break;
+                }
+                Ok(None) => {}
+                Err(err) => return Err(format!("toolkit wait failed: {err}")),
+            }
+            if start.elapsed() >= deadline {
+                kill_child_tree(&mut child);
+                timed_out = true;
+                break;
+            }
+            std::thread::sleep(POLL_INTERVAL);
+        }
+    }
+
+    // Phase 3: collect and reap, always after the kill decision.
+    //
+    // One grace shared across both readers, not one each: waiting READER_GRACE per
+    // pipe would put the worst case at deadline + 2 * grace and quietly break the
+    // bound this function advertises.
+    let grace_until = Instant::now() + READER_GRACE;
+    let remaining = || grace_until.saturating_duration_since(Instant::now());
+    let (stdout_read, stdout) = match stdout_slot {
+        Some(value) => value,
+        None => stdout_rx
+            .recv_timeout(remaining())
+            .unwrap_or_else(|_| (Ok(0), Vec::new())),
+    };
+    let stderr = match stderr_slot {
+        Some(value) => value,
+        None => stderr_rx.recv_timeout(remaining()).unwrap_or_default(),
+    };
+    // Disarm before the reap, not after: once the leader is reaped its pgid can be
+    // recycled, and a signal arriving in the window between the reap and the
+    // guard's drop would forward a SIGKILL to whatever inherited the number.
+    disarm_signal_forwarding();
+    let status = child
+        .wait()
+        .map_err(|err| format!("toolkit wait failed: {err}"))?;
+
+    // Resolve the refusal from the size flag first, however the loop exited: a
+    // child that overshoots the cap and then exits on its own must still report
+    // the size refusal rather than let its truncated stdout reach the parser and
+    // surface as an unhelpful decode error.
+    if oversized.load(Ordering::SeqCst) {
         return Err(format!(
             "toolkit output too large: exceeds the {MAX_TOOLKIT_STDOUT_BYTES} byte cap"
         ));
     }
-
-    let status = child
-        .wait()
-        .map_err(|err| format!("toolkit wait failed: {err}"))?;
-    let stderr = stderr_reader
-        .join()
-        .map_err(|_| "toolkit stderr reader panicked".to_string())?;
-
-    if !status.success() {
+    if timed_out {
         return Err(format!(
-            "toolkit exited with status {}: {}",
-            status,
+            "toolkit timed out after {}s: {}",
+            deadline.as_secs(),
             redact_child_stderr(&stderr, rpc_url)
         ));
     }
-    read_result.map_err(|err| format!("failed to read toolkit output: {err}"))?;
 
-    let bundle: ToolkitProofBundle = serde_json::from_slice(&stdout)
-        .map_err(|err| format!("failed to parse toolkit output: {err}"))?;
-    verify_bundle_context(&bundle, host_input, epoch)?;
-    Ok(bundle)
+    Ok(ChildOutcome {
+        stdout,
+        stderr,
+        status,
+        stdout_read: stdout_read
+            .map(|_| ())
+            .map_err(|err| format!("failed to read toolkit output: {err}")),
+    })
+}
+
+/// Kill the child and everything it spawned.
+#[cfg(unix)]
+fn kill_child_tree(child: &mut Child) {
+    // SAFETY: the pgid is the child's own pid, because `process_group(0)` made it
+    // a group leader, and the leader has not been reaped at any call site, so its
+    // zombie still pins the pgid and this cannot reach an unrelated group.
+    unsafe { libc::killpg(child.id() as libc::pid_t, libc::SIGKILL) };
+}
+
+/// Kill the child alone.
+///
+/// Descendants that inherited the pipes survive here and can hold them open, so
+/// the reader grace rather than the kill is what bounds the wait. Unix gets the
+/// stronger group kill above.
+#[cfg(not(unix))]
+fn kill_child_tree(child: &mut Child) {
+    let _ = child.kill();
+}
+
+/// Forward a fatal terminal signal to the supervised process group.
+///
+/// `process_group(0)` is what lets the deadline reach descendants, but it also
+/// takes the child out of the terminal's foreground group, so a Ctrl-C would
+/// otherwise reach only the prover. The prover dying is precisely what removes the
+/// deadline's enforcer, leaving the toolkit orphaned and unbounded, so the signal
+/// has to be passed on before this process goes away.
+#[cfg(unix)]
+struct SignalForwardGuard {
+    previous_int: libc::sighandler_t,
+    previous_term: libc::sighandler_t,
+}
+
+#[cfg(unix)]
+static SUPERVISED_PGID: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+/// Stop forwarding signals to the supervised group.
+///
+/// Must be called before the leader is reaped, never after: the reap releases the
+/// pid, and therefore the pgid, for reuse, so a handler still holding the number
+/// would signal whatever process group inherited it.
+#[cfg(unix)]
+fn disarm_signal_forwarding() {
+    SUPERVISED_PGID.store(0, Ordering::SeqCst);
+}
+
+#[cfg(not(unix))]
+fn disarm_signal_forwarding() {}
+
+#[cfg(unix)]
+extern "C" fn forward_fatal_signal(signum: libc::c_int) {
+    let pgid = SUPERVISED_PGID.load(Ordering::SeqCst);
+    if pgid > 0 {
+        // SAFETY: `killpg` is async-signal-safe. A non-zero value means the
+        // supervisor spawned the leader and has not reached its disarm, which
+        // precedes every reap, so the pgid is still ours.
+        //
+        // Not claimed: the disarm cannot be atomic with the reap it guards, so a
+        // signal landing in the few instructions between them would signal a pgid
+        // just released. Closing that needs the reap under a signal mask; the
+        // window it leaves is instructions wide rather than the seconds-long one
+        // that arming across phase 3 would have left.
+        unsafe { libc::killpg(pgid, libc::SIGKILL) };
+    }
+    // Restore the default and re-raise so the exit status is the ordinary
+    // killed-by-signal one rather than something this handler invented.
+    unsafe {
+        libc::signal(signum, libc::SIG_DFL);
+        libc::raise(signum);
+    }
+}
+
+#[cfg(unix)]
+impl SignalForwardGuard {
+    fn install() -> Self {
+        // SAFETY: installing a handler that only stores/loads an atomic and calls
+        // async-signal-safe functions. The previous dispositions are restored on
+        // drop, so nothing else's handler is clobbered beyond the child's life.
+        unsafe {
+            Self {
+                previous_int: libc::signal(
+                    libc::SIGINT,
+                    forward_fatal_signal as *const () as libc::sighandler_t,
+                ),
+                previous_term: libc::signal(
+                    libc::SIGTERM,
+                    forward_fatal_signal as *const () as libc::sighandler_t,
+                ),
+            }
+        }
+    }
+}
+
+/// Start forwarding terminal signals to the child's group.
+#[cfg(unix)]
+fn arm_signal_forwarding(child: &Child) {
+    SUPERVISED_PGID.store(child.id() as i32, Ordering::SeqCst);
+}
+
+#[cfg(not(unix))]
+fn arm_signal_forwarding(_child: &Child) {}
+
+#[cfg(unix)]
+impl Drop for SignalForwardGuard {
+    fn drop(&mut self) {
+        // SAFETY: restoring the dispositions captured in `install`.
+        unsafe {
+            libc::signal(libc::SIGINT, self.previous_int);
+            libc::signal(libc::SIGTERM, self.previous_term);
+        }
+        SUPERVISED_PGID.store(0, Ordering::SeqCst);
+    }
+}
+
+#[cfg(not(unix))]
+struct SignalForwardGuard;
+
+#[cfg(not(unix))]
+impl SignalForwardGuard {
+    fn install() -> Self {
+        Self
+    }
 }
 
 /// Reject a bundle whose self-reported context disagrees with what we asked for.
@@ -555,64 +879,166 @@ mod tests {
     }
 
     ///////////////////////////////////////////////
-    // STDOUT BOUND TESTS
+    // SUPERVISION TESTS
     ///////////////////////////////////////////////
 
-    // The cap only means something if it also stops the read. A child that streams
-    // without end must be killed, not drained: draining to EOF would hold the prover
-    // here forever, which is exactly the hang the cap exists to prevent. This test
-    // deadlocks on a regression rather than failing, which is the honest signal.
-    #[test]
-    fn test_endless_toolkit_output_is_killed_not_drained() {
-        let dir = std::env::temp_dir().join("endless-toolkit-stdout");
-        std::fs::create_dir_all(&dir).unwrap();
-        let script = dir.join("endless.sh");
-        std::fs::write(
-            &script,
-            "#!/bin/sh\nwhile :; do printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'; done\n",
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
-
+    /// Build a `/bin/sh -c` command wired like the real toolkit invocation.
+    fn sh_command(body: &str) -> Command {
         let mut command = Command::new("/bin/sh");
-        command.arg(&script);
+        command.arg("-c").arg(body);
         command.env_clear();
         command.envs(allowlisted_child_env(
             "ETHEREUM_MAINNET_RPC_URL",
             "https://x/y",
         ));
+        command
+    }
 
-        let mut child = command
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
+    // The cap only means something if it also stops the read. A child that streams
+    // without end must be killed, not drained: draining to EOF would hold the prover
+    // here forever, which is exactly the hang the cap exists to prevent. Driven
+    // through the real supervisor, so a regression fails here rather than in a
+    // hand-rolled mirror of it that cannot drift with the production path.
+    #[test]
+    fn test_endless_toolkit_output_is_killed_not_drained() {
+        let mut command = sh_command("while :; do printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'; done");
+        let started = Instant::now();
+        // A deadline far past what this needs: the size cap, not the clock, must be
+        // what stops an endless child.
+        let err = supervise_child(&mut command, Duration::from_secs(120), "https://x/y")
+            .expect_err("an endless child must be refused");
 
-        let mut stdout_pipe = child.stdout.take().unwrap();
-        let mut stdout = Vec::new();
-        stdout_pipe
-            .by_ref()
-            .take(MAX_TOOLKIT_STDOUT_BYTES as u64 + 1)
-            .read_to_end(&mut stdout)
-            .unwrap();
+        assert!(err.contains("too large"), "expected a size refusal: {err}");
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "the cap must stop this well before the deadline, took {:?}",
+            started.elapsed()
+        );
+    }
+
+    // A child that overshoots the cap and then exits on its own never gets killed,
+    // so the size refusal has to come from the flag rather than from the kill path.
+    // Otherwise its truncated stdout reaches the parser and the operator gets an
+    // unhelpful decode error in place of a precise size refusal.
+    #[test]
+    fn test_oversized_output_then_clean_exit_still_reports_size_refusal() {
+        let body = format!(
+            "dd if=/dev/zero bs=1024 count={} 2>/dev/null | tr '\\0' 'a'; exit 0",
+            (MAX_TOOLKIT_STDOUT_BYTES / 1024) + 64
+        );
+        let mut command = sh_command(&body);
+        let err = supervise_child(&mut command, Duration::from_secs(120), "https://x/y")
+            .expect_err("an oversized bundle must be refused even on a clean exit");
 
         assert!(
-            stdout.len() > MAX_TOOLKIT_STDOUT_BYTES,
-            "cap must be crossed"
+            err.contains("too large"),
+            "expected a size refusal, not a parse error: {err}"
         );
+    }
 
-        // The production path kills here; mirror it and prove the child is reaped
-        // rather than left streaming.
-        child.kill().unwrap();
-        drop(stdout_pipe);
-        let status = child.wait().unwrap();
-        assert!(!status.success(), "killed child must not report success");
+    // The oversized-and-alive shape. A child that overshoots the cap and then closes
+    // both pipes but keeps running fills both reader slots in one tick, so a loop
+    // that checked the readers before the size flag would leave without killing,
+    // skip the phase that bounds the child, and block on the reap for as long as the
+    // child chose to live. The refusal string alone does not catch it: the wrong
+    // implementation still returns "too large", just arbitrarily late. Assert the
+    // clock, not the message.
+    #[cfg(unix)]
+    #[test]
+    fn test_oversized_child_that_closes_pipes_and_lives_is_still_bounded() {
+        let body = format!(
+            "dd if=/dev/zero bs=1024 count={} 2>/dev/null | tr '\\0' 'a'; exec 1>&- 2>&-; sleep 60",
+            (MAX_TOOLKIT_STDOUT_BYTES / 1024) + 64
+        );
+        let mut command = sh_command(&body);
+        let started = Instant::now();
+        let err = supervise_child(&mut command, Duration::from_secs(2), "https://x/y")
+            .expect_err("an oversized bundle must be refused");
+        let elapsed = started.elapsed();
 
-        let _ = std::fs::remove_file(&script);
+        assert!(err.contains("too large"), "expected a size refusal: {err}");
+        assert!(
+            elapsed < Duration::from_secs(20),
+            "the child, not the supervisor, decided when this returned: {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn test_well_behaved_child_completes_under_the_deadline() {
+        let mut command = sh_command("printf 'hello'; exit 0");
+        let outcome = supervise_child(&mut command, Duration::from_secs(30), "https://x/y")
+            .expect("a well-behaved child must succeed");
+
+        assert_eq!(outcome.stdout, b"hello");
+        assert!(outcome.status.success());
+        assert!(outcome.stdout_read.is_ok());
+    }
+
+    // A child that produces nothing and sleeps must be cut at the deadline rather
+    // than at its own leisure.
+    #[test]
+    fn test_hanging_child_is_killed_at_the_deadline() {
+        let mut command = sh_command("sleep 60");
+        let started = Instant::now();
+        let err = supervise_child(&mut command, Duration::from_millis(300), "https://x/y")
+            .expect_err("a hanging child must time out");
+        let elapsed = started.elapsed();
+
+        assert!(err.contains("timed out"), "expected a timeout: {err}");
+        assert!(
+            elapsed < Duration::from_secs(10),
+            "must return near the deadline, not near the sleep, took {elapsed:?}"
+        );
+    }
+
+    // The grandchild pair. Both variants exercise different branches, and a single
+    // combined test gives false assurance on one of them: with the child exiting,
+    // a direct-child kill (or no kill at all) would pass a deadline-based assertion
+    // because the deadline is never reached.
+
+    // Variant A: a long-lived grandchild holds stdout while the child hangs. This is
+    // the variant that discriminates. The deadline fires, and only a GROUP kill
+    // releases the grandchild's write end, so the readers hit EOF at once and the
+    // call returns at ~the deadline. A direct-child kill leaves them blocked on the
+    // grandchild and the call instead returns at deadline + READER_GRACE, which the
+    // bound below rejects. Keep that bound well under READER_GRACE or this test
+    // silently stops testing anything.
+    #[cfg(unix)]
+    #[test]
+    fn test_grandchild_holding_stdout_while_child_hangs_is_killed_at_the_deadline() {
+        let mut command = sh_command("sleep 30 & printf 'partial'; sleep 60");
+        let started = Instant::now();
+        let err = supervise_child(&mut command, Duration::from_millis(300), "https://x/y")
+            .expect_err("a hanging child must time out");
+        let elapsed = started.elapsed();
+
+        assert!(err.contains("timed out"), "expected a timeout: {err}");
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "the group kill must release the grandchild's pipe immediately; \
+             taking ~READER_GRACE means only the direct child was killed. took {elapsed:?}"
+        );
+    }
+
+    // Variant B: the child exits promptly while a grandchild keeps stdout open for a
+    // while. Nothing is killed here and nothing should be: this pins the no-regression
+    // property, since today's read-to-EOF completes such a run correctly (just
+    // slowly). A supervisor that broke out on the child's exit would strand the
+    // bundle bytes and fail the run.
+    #[cfg(unix)]
+    #[test]
+    fn test_lingering_grandchild_after_child_exits_still_completes() {
+        let mut command = sh_command("sleep 2 & printf 'done'; exit 0");
+        let started = Instant::now();
+        let outcome = supervise_child(&mut command, Duration::from_secs(60), "https://x/y")
+            .expect("the child exited cleanly, so this must not be an error");
+        let elapsed = started.elapsed();
+
+        assert_eq!(outcome.stdout, b"done", "the child's bytes must survive");
+        assert!(
+            elapsed < Duration::from_secs(30),
+            "supervisor stalled on the grandchild's pipe, took {elapsed:?}"
+        );
     }
 
     ///////////////////////////////////////////////

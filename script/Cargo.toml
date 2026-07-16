@@ -18,5 +18,11 @@ serde_json = "=1.0.149"
 reqwest = { version = "=0.12.28", features = ["json", "rustls-tls"] }
 dotenvy = "=0.15.7"
 
+# Only for killpg and the terminal-signal forwarding in toolkit.rs: std can put a
+# child in its own process group but cannot signal one. Already in Cargo.lock at
+# this exact version via tokio, so this pulls in nothing new to compile.
+[target.'cfg(unix)'.dependencies]
+libc = "=0.2.180"
+
 [dev-dependencies]
 hex = "=0.4"

@@ -603,7 +603,7 @@ Worst case per compromised component. "Liveness" means proofs fail to be produce
 | Compromised component | Worst case | Why it is bounded |
 | --- | --- | --- |
 | Ethereum RPC | Liveness | Fake state root fails `STATE_ROOT_MISMATCH` on-chain |
-| Python toolkit subprocess | Liveness | Proofs re-verified in-circuit, slots re-derived in-circuit |
+| Python toolkit subprocess | Liveness, **plus `NETWORK_PRIVATE_KEY` theft** | It cannot forge a value (proofs re-verified in-circuit, slots re-derived in-circuit) and it cannot read the key from its environment (`env_clear` plus a closed allowlist). But it runs as the same uid as the prover, so it can `open("script/.env")` and read the key off disk. Escalates to the row below. Closing it needs a uid or filesystem boundary between prover and toolkit, which this process model does not draw |
 | Host machine / `INPUT_JSON` / env vars | Liveness + selection | Committed values all re-verified, but host chooses WHICH requests to prove (censorship, not forgery) |
 | Guest ELF substitution (`SP1_ELF_PATH`) | Liveness | Different ELF yields a different vKey, `verifyProof` rejects |
 | Prover network operator | Liveness (withhold) | Cannot forge (soundness), inputs are public Ethereum data so nothing secret is learned |

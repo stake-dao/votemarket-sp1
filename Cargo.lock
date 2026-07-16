@@ -5268,6 +5268,7 @@ dependencies = [
  "alloy-sol-types 0.8.14",
  "dotenvy",
  "hex",
+ "libc",
  "reqwest",
  "rlp",
  "serde",

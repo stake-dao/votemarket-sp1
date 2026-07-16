@@ -29,7 +29,7 @@ use input::{
     build_input_from_rpc, build_input_from_toolkit, enforce_input_bounds, expand_requests,
 };
 use proof::persist_proof;
-use rpc::{fetch_block_state_root, fetch_latest_block_number, fetch_proofs};
+use rpc::{build_http_client, fetch_block_state_root, fetch_latest_block_number, fetch_proofs};
 use toolkit::{ensure_input_json, run_toolkit};
 use types::HostInput;
 
@@ -120,7 +120,8 @@ async fn main() {
     let (rpc_url, rpc_env_name) =
         resolve_rpc_url(host_input.chain_id).expect("Missing RPC_URL or chain RPC env");
 
-    let http_client = reqwest::Client::new();
+    let http_client =
+        build_http_client().unwrap_or_else(|err| fail("Failed to build the HTTP client", &err));
 
     // Resolve block number - fetch latest if not specified
     // When using "latest", we subtract a few blocks to avoid race conditions

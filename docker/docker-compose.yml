@@ -32,6 +32,14 @@ services:
       - RUST_BACKTRACE=1
       - NETWORK_PRIVATE_KEY
       - ETHEREUM_MAINNET_RPC_URL
+      # The deadlines `just env-help` advertises. Docker is the documented proof
+      # path, so without these a `TOOLKIT_TIMEOUT_SECS=1200 just prove ...` is
+      # dropped on the floor and the run dies on the default the operator was
+      # overriding. Valueless form: unset on the host stays unset in the
+      # container (verified), so the defaults still apply and the strict parse
+      # never sees an empty string.
+      - TOOLKIT_TIMEOUT_SECS
+      - RPC_REQUEST_TIMEOUT_SECS
     stdin_open: true
     tty: true
 
