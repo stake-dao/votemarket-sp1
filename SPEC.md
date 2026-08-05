@@ -117,11 +117,11 @@ The current Votemarket implementation uses **on-chain MPT verification**:
 | Metric                | MPT (Before) | ZK (After)      | Improvement      |
 | --------------------- | ------------ | --------------- | ---------------- |
 | Calldata per claim    | ~3-10KB      | ~256 bytes      | **~12-40x smaller** |
-| Max claims per tx     | ~40          | **Unlimited\*** | **Unbounded**    |
+| Max claims per tx     | ~40          | **High\***      | **Much higher\*** |
 | Gas cost (100 claims) | ~25M gas     | ~5.3M gas       | **~5x cheaper**  |
 | User experience       | Multiple txs | Single tx       | **Much better**  |
 
-\*Practically limited by public values encoding, but can handle 500+ claims easily.
+\*Bounded by the proof's public-values size against the chain tx-size limit. Curve public values measured at 184 KB for 660 users (votemarket-zk-migration, epoch 1772668800), above the OP-stack ~128 KB calldata ceiling, so a full weekly distribution needs request chunking or multiple relayer transactions in production.
 
 ### Detailed Calldata Comparison
 
@@ -620,7 +620,7 @@ Each objection a reviewer coming from the MPT path is likely to raise, with the 
 
 **"We replace audited Solidity math with a black-box circuit."** Partially true. The on-chain trust surface stays small and auditable (decode, state-root match, controller whitelist, epoch match, divergence guard, all plain Solidity in `ZKVerifier.sol`). The circuit is not a black box: it is ~750 lines of Rust logic (plus ~1300 lines of tests) reproducibly compiled in Docker, with adversarial tests for relabeling, cross-protocol substitution, exclusion proofs, unknown protocol ids, and a golden ABI fixture. What IS true: the guest circuit and its `eth_trie` dependency have not been through an external audit yet, unlike the Solidity path. That audit is an open item, not a solved problem.
 
-**"The vKey is a magic number nobody can re-derive."** False, with a condition. `just vkey-verify` rebuilds the guest ELF inside the pinned Docker image (Rust 1.88.0, SP1 v6.3.0, `linux/amd64`, exact `=x.y.z` dependency pins, committed `Cargo.lock`) and byte-compares the derived vKey against `.vkey.prod` (`0x000e2b1800ec78040f1bbc65afcc6aebb7bd0d73601fc6a50dd6d0ea8a4590ba`). CI runs this on every build. Any reviewer can re-derive it, provided they use the pinned toolchain (native builds can legitimately diverge).
+**"The vKey is a magic number nobody can re-derive."** False, with a condition. `just vkey-verify` rebuilds the guest ELF inside the pinned Docker image (Rust 1.88.0, SP1 v6.3.0, `linux/amd64`, exact `=x.y.z` dependency pins, committed `Cargo.lock`) and byte-compares the derived vKey against the value committed in `.vkey.prod`. CI runs this on every build. Any reviewer can re-derive it, provided they use the pinned toolchain (native builds can legitimately diverge).
 
 **"The owner can swap the vKey and forge everything."** True, and stated as such in item 4 above. A single owner transaction can redirect proof acceptance to an arbitrary circuit. This is the strongest argument of the skeptical position and the reason for the v1 trusted-submitter shadow mode. The mitigation path is operational (multisig plus timelock on the owner) and is listed in [Open Items](#open-items). Note the MPT path is unaffected by any `ZKVerifier` owner action.
 
