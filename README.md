@@ -200,6 +200,26 @@ just dev-fmt          # Format code
 > [!WARNING]
 > `just dev-build-guest` may produce a different VKEY than CI due to environment differences. Always use `just build-guest` (Docker) for reproducible builds.
 
+### Pre-push check
+
+Run CI's checks locally, in one command, before pushing:
+
+```bash
+just ci
+```
+
+`just ci` runs CI's four checks (clippy, tests, build, then `docker compose build`
+plus the reproducible-build VKEY byte-compare) sequentially and fail-fast, using
+CI's exact commands. Treat it as a strong pre-push filter rather than an exact CI
+replica, for two reasons: the native cargo legs run on your host OS, not CI's
+`ubuntu-latest` (a platform-specific compile or lint difference can still diverge,
+so the Docker VKEY leg is the only environment-faithful one), and CI runs its jobs
+in parallel while this stops at the first failure. The VKEY leg reruns
+`docker compose build` as CI does, cache-cheap when only Rust source changed and
+heavier when a baked input changes (the Dockerfile, entrypoint, toolchain, or
+toolkit lock). A cold first run builds the whole image. Prerequisites match native
+development: `protoc`, the pinned toolchain (`rust-toolchain.toml`), and Docker.
+
 ### Testing
 
 ```bash

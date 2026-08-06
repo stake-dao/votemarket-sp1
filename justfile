@@ -11,6 +11,50 @@ default:
     @just --list
 
 # ============================================================================
+# CI GATE (one command mirroring CI)
+# ============================================================================
+# `just ci` is the pre-push check: it runs CI's checks locally so a failure
+# surfaces before the PR instead of on it.
+
+# CI `clippy` job, verbatim (the CI-pinned twin of the dev-lint convenience recipe).
+ci-lint:
+    cargo clippy --workspace --all-targets -- -D warnings
+
+# CI `test` job, verbatim (kept separate from dev-test's plain `cargo test`).
+ci-test:
+    cargo test --workspace --all-targets
+
+# CI `build` job, verbatim (kept separate from dev-build's `--release`).
+ci-build:
+    cargo build --workspace --all-targets
+
+# `ci` runs CI's four checks locally, sequentially and fail-fast, native checks
+# first then the Docker VKEY gate. Each leg runs CI's exact command, so none can
+# silently drift from .github/workflows/ci.yml:
+#   ci-lint  -> clippy job  (cargo clippy --workspace --all-targets -- -D warnings)
+#   ci-test  -> test job    (cargo test  --workspace --all-targets)
+#   ci-build -> build job   (cargo build --workspace --all-targets)
+#   build + vkey-verify -> build-guest job (docker compose build, then the
+#            reproducible-build VKEY byte-compare against .vkey.prod)
+# Two honest caveats, so this is a strong pre-push filter, not an exact CI replica:
+#  - The native legs run on your host OS, not CI's ubuntu-latest, so a
+#    platform-specific compile or lint difference can still diverge. The Docker
+#    VKEY leg is the only environment-faithful one.
+#  - CI runs its four jobs in parallel and independently, while this runs them
+#    sequentially and stops at the first failure, so one run surfaces the first
+#    failing check, not all of them at once.
+# `build` reruns `docker compose build` exactly as CI does (dropping it would let
+# vkey-verify pass against a stale image, since docker/entrypoint.sh,
+# toolkit-requirements.lock, rust-toolchain.toml and the Dockerfile are baked in,
+# not bind-mounted). It is cache-cheap when only Rust source changed and rebuilds
+# just the affected layers when a baked input changes. A cold first run builds the
+# whole image. Prerequisites match native dev: protoc, the pinned toolchain
+# (rust-toolchain.toml), and Docker.
+#
+# One-command local CI check: run before pushing.
+ci: ci-lint ci-test ci-build build vkey-verify
+
+# ============================================================================
 # MAIN COMMANDS (Docker-based, recommended)
 # ============================================================================
 # These commands run in Docker for reproducible builds that match CI.
