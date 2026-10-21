@@ -793,8 +793,14 @@ mod tests {
 
     #[test]
     fn test_parse_named_u64_accepts_decimal_hex_and_zero() {
-        assert_eq!(parse_named_u64("BLOCK_NUMBER", "21134723").unwrap(), 21134723);
-        assert_eq!(parse_named_u64("BLOCK_NUMBER", "0x1427d83").unwrap(), 21134723);
+        assert_eq!(
+            parse_named_u64("BLOCK_NUMBER", "21134723").unwrap(),
+            21134723
+        );
+        assert_eq!(
+            parse_named_u64("BLOCK_NUMBER", "0x1427d83").unwrap(),
+            21134723
+        );
         assert_eq!(parse_named_u64("EPOCH", "0").unwrap(), 0);
     }
 
